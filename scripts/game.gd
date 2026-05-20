@@ -1313,7 +1313,7 @@ func _spawn_npc() -> void:
 		if world.collides_at(x, z, 1.0):
 			continue
 		var node := Human.build(NPC_SKINS.pick_random(), NPC_SHIRTS.pick_random(),
-			NPC_PANTS.pick_random(), NPC_HAIR.pick_random())
+			NPC_PANTS.pick_random(), NPC_HAIR.pick_random(), -1, randf() < 0.5)
 		node.position = Vector3(x, 0, z)
 		add_child(node)
 		npcs.append({

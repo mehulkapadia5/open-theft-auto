@@ -2,7 +2,7 @@ class_name Human
 ## Builds the blocky humanoid used for the player, NPCs and cops.
 ## Returns a Node3D; limb sub-groups are stored in meta "limbs" for walk animation.
 
-static func build(skin: int, shirt: int, pants := 0x2a2a3a, hair := 0x2a1a08, hat := -1) -> Node3D:
+static func build(skin: int, shirt: int, pants := 0x2a2a3a, hair := 0x2a1a08, hat := -1, female := false) -> Node3D:
 	var g := Node3D.new()
 	var skin_m := Build.mat(Build.hex(skin), 0.65)
 	var shirt_m := Build.mat(Build.hex(shirt), 0.75)
@@ -11,12 +11,18 @@ static func build(skin: int, shirt: int, pants := 0x2a2a3a, hair := 0x2a1a08, ha
 	var shoe_m := Build.mat(Build.hex(0x111111), 0.5)
 	var eye_m := Build.mat(Build.hex(0x0a0a0a), 0.3)
 
-	var torso := Build.box(0.55, 0.7, 0.32, shirt_m)
+	var torso_w := 0.46 if female else 0.55
+	var torso := Build.box(torso_w, 0.7, 0.3 if female else 0.32, shirt_m)
 	torso.position.y = 1.35
 	g.add_child(torso)
-	var shoulders := Build.box(0.74, 0.18, 0.36, shirt_m)
+	var shoulders := Build.box(0.6 if female else 0.74, 0.18, 0.34 if female else 0.36, shirt_m)
 	shoulders.position.y = 1.69
 	g.add_child(shoulders)
+	if female:
+		# A-line skirt over the hips
+		var skirt := Build.box(torso_w + 0.2, 0.3, 0.36, pants_m)
+		skirt.position.y = 0.92
+		g.add_child(skirt)
 	var neck := Build.cyl(0.09, 0.1, 0.14, 8, skin_m)
 	neck.position.y = 1.78
 	g.add_child(neck)
@@ -29,6 +35,11 @@ static func build(skin: int, shirt: int, pants := 0x2a2a3a, hair := 0x2a1a08, ha
 	var hair_box := Build.box(0.36, 0.18, 0.34, hair_m)
 	hair_box.position = Vector3(0, 0.13, -0.02)
 	head_g.add_child(hair_box)
+	if female:
+		# Long hair flowing down the back
+		var long_hair := Build.box(0.38, 0.52, 0.16, hair_m)
+		long_hair.position = Vector3(0, -0.16, -0.17)
+		head_g.add_child(long_hair)
 	for ex in [-0.07, 0.07]:
 		var eye := Build.box(0.045, 0.045, 0.02, eye_m)
 		eye.position = Vector3(ex, 0.02, 0.16)
@@ -46,6 +57,12 @@ static func build(skin: int, shirt: int, pants := 0x2a2a3a, hair := 0x2a1a08, ha
 	var arm_r := _arm(1, shirt_m, skin_m)
 	var leg_l := _leg(-1, pants_m, shoe_m)
 	var leg_r := _leg(1, pants_m, shoe_m)
+	if female:
+		# Narrower frame — pull the arms and legs inward.
+		arm_l.position.x = -0.33
+		arm_r.position.x = 0.33
+		leg_l.position.x = -0.12
+		leg_r.position.x = 0.12
 	g.add_child(arm_l)
 	g.add_child(arm_r)
 	g.add_child(leg_l)
