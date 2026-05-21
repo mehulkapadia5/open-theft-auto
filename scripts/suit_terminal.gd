@@ -7,6 +7,7 @@ extends CanvasLayer
 ## buying a tier jumps straight to it.
 
 signal closed
+signal purchased
 
 const TEXT := Color("e8e6e0")
 const DIM := Color("8c9bab")
@@ -84,7 +85,7 @@ func _build_list() -> PanelContainer:
 	var foot := HBoxContainer.new()
 	foot.add_theme_constant_override("separation", 18)
 	col.add_child(foot)
-	var hint := _lbl("Buying a tier upgrades the suit instantly — you always wear your best.",
+	var hint := _lbl("Your suit is delivered to the SUIT BAY pad outside — step onto it to suit up.",
 		14, DIM)
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	foot.add_child(hint)
@@ -144,6 +145,7 @@ func _on_buy(idx: int) -> void:
 	# idx is the catalog index; tier is idx + 1.
 	if Garage.buy_suit(idx + 1):
 		AudioFX.coin()
+		purchased.emit()
 
 
 func _unhandled_input(event: InputEvent) -> void:

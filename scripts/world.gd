@@ -23,6 +23,8 @@ const EXCHANGE := {"x": 0.0, "z": -6.0}
 const DEALERSHIP := {"x": 0.0, "z": 26.0}
 # Stark lab kiosk (Iron Man suits), one block west of the exchange.
 const STARK_LAB := {"x": -32.0, "z": -6.0}
+# Lit pad beside the Stark kiosk — a bought suit is delivered here to step onto.
+const STARK_SUIT_PAD := {"x": -26.0, "z": -6.0}
 # Realtor kiosk (safehouse property), one block east of the exchange.
 const REALTOR := {"x": 32.0, "z": -6.0}
 
@@ -467,6 +469,32 @@ func _build_stark_lab(cx: float, cz: float) -> void:
 	sign_text.position = Vector3(cx, th - 8.0, tz - td / 2.0 - 0.3)
 	add_child(sign_text)
 
+	# Suit delivery pad — a glowing dais where a bought suit is placed to wear.
+	var pad_dark := Build.mat(Build.hex(0x1a1d24), 0.5, 0.5)
+	var dais := Build.cyl(2.2, 2.5, 0.16, 28, pad_dark)
+	dais.position = Vector3(STARK_SUIT_PAD.x, 0.08, STARK_SUIT_PAD.z)
+	add_child(dais)
+	var ring := Build.emissive(Build.hex(0x0c2230), blue, 2.6)
+	var ring_mi := Build.cyl(2.1, 2.1, 0.06, 28, ring)
+	ring_mi.position = Vector3(STARK_SUIT_PAD.x, 0.18, STARK_SUIT_PAD.z)
+	add_child(ring_mi)
+	# A soft column of light marking the pad from a distance.
+	var beam_m := Build.emissive(Build.hex(0x6fd8ff), blue, 0.9)
+	beam_m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam_m.albedo_color.a = 0.16
+	var beam := Build.cyl(1.5, 1.5, 9.0, 20, beam_m)
+	beam.position = Vector3(STARK_SUIT_PAD.x, 4.7, STARK_SUIT_PAD.z)
+	add_child(beam)
+	var pad_label := Label3D.new()
+	pad_label.text = "SUIT BAY"
+	pad_label.font_size = 48
+	pad_label.pixel_size = 0.006
+	pad_label.modulate = Color("c8f0ff")
+	pad_label.outline_modulate = Color(0, 0, 0, 0.8)
+	pad_label.position = Vector3(STARK_SUIT_PAD.x, 2.6, STARK_SUIT_PAD.z)
+	pad_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(pad_label)
+
 	_build_terminal_kiosk(STARK_LAB.x, STARK_LAB.z, "SUITS  ·  PRESS E",
 		blue, Color("c8f0ff"))
 
@@ -526,54 +554,177 @@ func _safehouse_at(cx: float, cz: float) -> int:
 	return -1
 
 
-## A buyable safehouse — a tidy two-storey home with a lawn, driveway, a glowing
-## doorway and a name sign. The respawn spot (PropertyCatalog x/z) is the front
-## yard; the house sits just behind it so respawning never lands inside a wall.
+## A buyable safehouse — a walled modern estate: a two-storey glass-and-white
+## mansion with a stepped upper floor, a three-door garage wing, a pool, a
+## rooftop helipad on the grander homes, hedges, cypress trees, and a gated
+## entrance bearing the estate's name. Pricier properties are built grander.
+## The respawn spot (PropertyCatalog x/z) is the front courtyard, kept clear.
 func _build_safehouse(idx: int) -> void:
 	var p: Dictionary = PropertyCatalog.LIST[idx]
-	var fx: float = p.x
-	var fz: float = p.z
-	var hz := fz + 6.0                       # house centre, behind the front yard
+	var cx: float = p.x
+	var cz: float = p.z
+	var s: float = lerpf(0.88, 1.06, idx / 3.0)   # pricier homes are grander
+	var has_pool := idx >= 1
+	var has_heli := idx >= 2
+	var half := 8.5                                # estate plot half-width
 
-	var lawn := Build.box(20.0, 0.12, 18.0, Build.mat(Build.hex(0x6f8a4e), 0.95))
-	lawn.position = Vector3(fx, 0.06, fz + 3.0)
+	var wall_m := Build.mat(Build.hex(0xeceef0), 0.6)
+	var glass_m := Build.mat(Build.hex(0x1f2c3a), 0.12, 0.5)
+	var roof_m := Build.mat(Build.hex(0x33363d), 0.8)
+	var door_m := Build.mat(Build.hex(0x383b42), 0.4, 0.3)
+	var lawn_m := Build.mat(Build.hex(0x6f8a4e), 0.95)
+	var pave_m := Build.mat(Build.hex(0xb7b2a6), 0.9)
+	var hedge_m := Build.mat(Build.hex(0x46703a), 0.97)
+	var fence_m := Build.mat(Build.hex(0xe4e6e8), 0.7)
+	var water_m := Build.mat(Build.hex(0x2f8fb0), 0.15, 0.35)
+
+	# --- Grounds ---
+	var lawn := Build.box(half * 2.0, 0.12, half * 2.0, lawn_m)
+	lawn.position = Vector3(cx, 0.07, cz)
 	add_child(lawn)
-	var drive := Build.box(4.5, 0.14, 7.0, Build.mat(Build.hex(0x6b6b72), 0.9))
-	drive.position = Vector3(fx, 0.08, fz - 1.0)
+	var drive := Build.box(8.0, 0.14, half * 2.0 - 1.0, pave_m)
+	drive.position = Vector3(cx, 0.1, cz)
 	add_child(drive)
 
-	var hw := 10.0
-	var hd := 8.0
-	var hh := 7.5
-	var house := Build.box(hw, hh, hd, Build.mat(Build.hex(0xe3dcc8), 0.85))
-	house.position = Vector3(fx, hh / 2.0 + 0.14, hz)
-	add_child(house)
-	buildings.append({"x": fx, "z": hz, "w": hw, "d": hd, "h": hh})
-	var roof := Build.box(hw + 1.0, 0.6, hd + 1.0, Build.mat(Build.hex(0x4a4a52), 0.8))
-	roof.position = Vector3(fx, hh + 0.3, hz)
-	add_child(roof)
-	var upper := Build.box(hw - 3.0, 2.4, hd - 2.0, Build.mat(Build.hex(0xc99878), 0.85))
-	upper.position = Vector3(fx, hh + 1.5, hz)
-	add_child(upper)
+	# --- Main house: two stepped storeys ---
+	var gw := 13.4 * s
+	var gd := 6.6 * s
+	var gh := 4.9
+	var hcx := cx + 1.0
+	var hcz := cz + 4.7
+	var g1 := Build.box(gw, gh, gd, wall_m)
+	g1.position = Vector3(hcx, gh / 2.0 + 0.14, hcz)
+	add_child(g1)
+	buildings.append({"x": hcx, "z": hcz, "w": gw, "d": gd, "h": gh})
+	var r1 := Build.box(gw + 0.7, 0.45, gd + 0.7, roof_m)
+	r1.position = Vector3(hcx, gh + 0.34, hcz)
+	add_child(r1)
 
-	# Glowing doorway facing the front yard.
-	var door := Build.emissive(Build.hex(0x2a2418), Color("ffd98a"), 1.6)
-	var door_mi := Build.box(2.0, 3.4, 0.3, door)
-	door_mi.position = Vector3(fx, 1.85, hz - hd / 2.0 - 0.1)
-	add_child(door_mi)
-	for wx in [-3.0, 3.0]:
-		var win := Build.emissive(Build.hex(0x2a2a20), Color("fff0b0"), 0.8)
-		var win_mi := Build.box(1.6, 1.6, 0.3, win)
-		win_mi.position = Vector3(fx + wx, 2.4, hz - hd / 2.0 - 0.1)
-		add_child(win_mi)
+	var uw := 7.6 * s
+	var ud := 5.4 * s
+	var uh := 4.0
+	var ucx := hcx - 2.4
+	var uy := gh + 0.56
+	var g2 := Build.box(uw, uh, ud, wall_m)
+	g2.position = Vector3(ucx, uy + uh / 2.0, hcz + 0.3)
+	add_child(g2)
+	var r2 := Build.box(uw + 0.6, 0.4, ud + 0.6, roof_m)
+	r2.position = Vector3(ucx, uy + uh + 0.3, hcz + 0.3)
+	add_child(r2)
 
+	# Glass — window bands facing the courtyard, plus a side wall of glass.
+	var fz := hcz - gd / 2.0 - 0.05
+	for wx in [-3.8, -0.4, 3.0]:
+		var pane := Build.box(2.7 * s, 2.7, 0.22, glass_m)
+		pane.position = Vector3(hcx + wx * s, 2.4, fz)
+		add_child(pane)
+	for wx2 in [-2.0, 2.0]:
+		var pane2 := Build.box(2.5 * s, 2.4, 0.22, glass_m)
+		pane2.position = Vector3(ucx + wx2 * s, uy + 2.1, hcz + 0.3 - ud / 2.0 - 0.05)
+		add_child(pane2)
+	var side_glass := Build.box(0.22, 2.6, 3.6 * s, glass_m)
+	side_glass.position = Vector3(hcx + gw / 2.0 + 0.04, 2.5, hcz)
+	add_child(side_glass)
+
+	# Glowing entrance door, courtyard-facing.
+	var door_glow := Build.emissive(Build.hex(0x2a2418), Color("ffd98a"), 1.5)
+	var door := Build.box(2.6, 3.2, 0.3, door_glow)
+	door.position = Vector3(hcx + 4.4 * s, 1.7, fz)
+	add_child(door)
+
+	# --- Three-door garage wing, front-left ---
+	var gar_w := 8.4
+	var gar_d := 5.4
+	var gar_h := 3.6
+	var gar_x := cx - 4.1
+	var gar_z := cz - 4.0
+	var garage := Build.box(gar_w, gar_h, gar_d, wall_m)
+	garage.position = Vector3(gar_x, gar_h / 2.0 + 0.14, gar_z)
+	add_child(garage)
+	buildings.append({"x": gar_x, "z": gar_z, "w": gar_w, "d": gar_d, "h": gar_h})
+	var gar_roof := Build.box(gar_w + 0.5, 0.4, gar_d + 0.5, roof_m)
+	gar_roof.position = Vector3(gar_x, gar_h + 0.3, gar_z)
+	add_child(gar_roof)
+	for di in 3:
+		var dx := gar_x - gar_w / 2.0 + 1.6 + di * 2.55
+		var gd_mi := Build.box(2.2, 2.6, 0.2, door_m)
+		gd_mi.position = Vector3(dx, 1.45, gar_z - gar_d / 2.0 - 0.07)
+		add_child(gd_mi)
+
+	# --- Rooftop helipad (grander estates) ---
+	if has_heli:
+		var pad_x := hcx + gw / 2.0 - 3.0
+		var pad := Build.cyl(2.2, 2.2, 0.12, 24, Build.mat(Build.hex(0x2e3138), 0.9))
+		pad.position = Vector3(pad_x, gh + 0.62, hcz)
+		add_child(pad)
+		var hp := Build.mat(Build.hex(0xe7e7e2), 0.85)
+		for legdx in [-0.8, 0.8]:
+			var leg := Build.box(0.42, 0.05, 2.2, hp)
+			leg.position = Vector3(pad_x + legdx, gh + 0.7, hcz)
+			add_child(leg)
+		var bar := Build.box(1.6, 0.05, 0.46, hp)
+		bar.position = Vector3(pad_x, gh + 0.7, hcz)
+		add_child(bar)
+
+	# --- Swimming pool + deck, front-right ---
+	if has_pool:
+		var deck := Build.box(7.6, 0.16, 6.8, pave_m)
+		deck.position = Vector3(cx + 4.7, 0.13, cz - 1.2)
+		add_child(deck)
+		var pool := Build.box(5.2, 0.3, 4.2, water_m)
+		pool.position = Vector3(cx + 4.7, 0.22, cz - 1.2)
+		add_child(pool)
+		for li in [-1.4, 1.4]:
+			var lounge := Build.box(0.85, 0.3, 1.9, Build.mat(Build.hex(0xdad6c8), 0.8))
+			lounge.position = Vector3(cx + 7.2, 0.32, cz - 1.2 + li)
+			add_child(lounge)
+
+	# --- Perimeter wall: back, sides, and the two flanks of an 8 m gate gap ---
+	var t := 0.4
+	var wh := 1.7
+	_wall(cx, cz + half, half * 2.0, wh, t, fence_m)
+	_wall(cx - half, cz, t, wh, half * 2.0, fence_m)
+	_wall(cx + half, cz, t, wh, half * 2.0, fence_m)
+	var flank := half - 4.0
+	_wall(cx - 4.0 - flank / 2.0, cz - half, flank, wh, t, fence_m)
+	_wall(cx + 4.0 + flank / 2.0, cz - half, flank, wh, t, fence_m)
+
+	# Gate posts with glowing lamp caps.
+	for px in [cx - 4.0, cx + 4.0]:
+		var post := Build.box(1.0, 2.8, 1.0, fence_m)
+		post.position = Vector3(px, 1.56, cz - half)
+		add_child(post)
+		var cap := Build.box(0.7, 0.7, 0.7,
+			Build.emissive(Build.hex(0x2a2418), Color("ffe6a8"), 1.6))
+		cap.position = Vector3(px, 3.1, cz - half)
+		add_child(cap)
+
+	# Hedges along the front wall.
+	for hx in [cx - 4.0 - flank / 2.0, cx + 4.0 + flank / 2.0]:
+		var hedge := Build.box(flank - 0.6, 1.1, 1.0, hedge_m)
+		hedge.position = Vector3(hx, 0.7, cz - half + 1.3)
+		add_child(hedge)
+
+	# Cypress trees tucked in clear corners of the grounds.
+	for spot in [Vector2(cx - half + 1.0, cz + half - 2.5),
+			Vector2(cx + half - 1.0, cz - half + 2.5)]:
+		var trunk := Build.cyl(0.18, 0.22, 1.4, 6,
+			Build.mat(Build.hex(0x6b4422), 0.95))
+		trunk.position = Vector3(spot.x, 0.7, spot.y)
+		add_child(trunk)
+		var foliage := Build.cyl(0.1, 1.5, 6.2, 7,
+			Build.mat(Build.hex(0x3f6a36), 0.95))
+		foliage.position = Vector3(spot.x, 4.4, spot.y)
+		add_child(foliage)
+
+	# Estate name sign above the gate.
 	var sign_text := Label3D.new()
 	sign_text.text = p.name
-	sign_text.font_size = 56
-	sign_text.pixel_size = 0.01
-	sign_text.modulate = Color("fff0c8")
-	sign_text.outline_modulate = Color(0, 0, 0, 0.85)
-	sign_text.position = Vector3(fx, hh + 3.6, hz - hd / 2.0)
+	sign_text.font_size = 52
+	sign_text.pixel_size = 0.011
+	sign_text.modulate = Color("fff2d2")
+	sign_text.outline_modulate = Color(0, 0, 0, 0.9)
+	sign_text.position = Vector3(cx, 3.5, cz - half)
 	sign_text.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(sign_text)
 

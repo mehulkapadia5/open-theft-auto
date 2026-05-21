@@ -146,6 +146,7 @@ func _ready() -> void:
 	suit_terminal = SuitTerminal.new()
 	add_child(suit_terminal)
 	suit_terminal.closed.connect(_on_terminal_closed)
+	suit_terminal.purchased.connect(_on_suit_purchased)
 
 	realtor_terminal = RealtorTerminal.new()
 	add_child(realtor_terminal)
@@ -367,6 +368,20 @@ func _open_realtor() -> void:
 	GameState.paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	realtor_terminal.open()
+
+
+## After buying a suit tier at Stark, deliver the suit to the lit pad beside
+## the kiosk so the player can walk over and step onto it. If a suit is already
+## being worn, the upgrade just applies live.
+func _on_suit_purchased() -> void:
+	var nm: String = Garage.suit_stats().name
+	if suit_state == "none" and suit_node != null:
+		suit_node.position = Vector3(CityWorld.STARK_SUIT_PAD.x, 0.0,
+			CityWorld.STARK_SUIT_PAD.z)
+		suit_armed = true
+		_show_objective("%s delivered to the SUIT BAY pad outside — step onto it to suit up." % nm, 7.0)
+	else:
+		_show_objective("Suit upgraded to %s." % nm, 4.0)
 
 
 ## Drop the player's owned car `catalog_idx` onto the dealership lot. The
