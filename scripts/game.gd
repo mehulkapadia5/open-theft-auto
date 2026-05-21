@@ -21,9 +21,13 @@ var sky_mat: ProceduralSkyMaterial
 var hud: HUD
 var stock_terminal: StockTerminal
 var dealership_terminal: DealershipTerminal
-var terminal_open := false       # true while either kiosk terminal is on screen
+var suit_terminal: SuitTerminal
+var realtor_terminal: RealtorTerminal
+var terminal_open := false       # true while any kiosk terminal is on screen
 var _near_exchange := false      # on foot and within reach of the exchange kiosk
 var _near_dealership := false    # on foot and within reach of the dealership kiosk
+var _near_stark := false         # on foot and within reach of the Stark lab kiosk
+var _near_realtor := false       # on foot and within reach of the realtor kiosk
 var _owned_spawn = null          # the player's last car spawned onto the lot
 var player_node: Node3D
 var weapon_holder: Node3D       # holds the visible weapon prop in the player's hand
@@ -68,8 +72,10 @@ var repulsor_at := -10.0
 var missile_at := -10.0
 const SUIT_STAGGER := 0.1
 const SUIT_GROW := 0.5
-const REPULSOR_W := {"range": 95.0, "damage": 24.0, "explosive": false, "pellets": 1.0}
-const MISSILE_W := {"range": 165.0, "damage": 68.0, "explosive": true, "pellets": 1.0}
+# Repulsor/missile reach is fixed; damage scales with the suit tier (see
+# SuitCatalog / Garage.suit_stats()).
+const REPULSOR_RANGE := 95.0
+const MISSILE_RANGE := 165.0
 
 # ---------------- Loop bookkeeping ----------------
 var walk_phase := 0.0
@@ -135,6 +141,14 @@ func _ready() -> void:
 	dealership_terminal.closed.connect(_on_terminal_closed)
 	dealership_terminal.spawn_requested.connect(_spawn_owned_vehicle)
 
+	suit_terminal = SuitTerminal.new()
+	add_child(suit_terminal)
+	suit_terminal.closed.connect(_on_terminal_closed)
+
+	realtor_terminal = RealtorTerminal.new()
+	add_child(realtor_terminal)
+	realtor_terminal.closed.connect(_on_terminal_closed)
+
 	GameState.started = false
 	GameState.paused = false
 	GameState.init_weapon_ammo()
@@ -178,6 +192,8 @@ func _on_start() -> void:
 	terminal_open = false
 	_near_exchange = false
 	_near_dealership = false
+	_near_stark = false
+	_near_realtor = false
 	_owned_spawn = null
 	var s := world.find_safe_spawn()
 	player_pos = Vector3(s.x, 0, s.y)
@@ -191,7 +207,7 @@ func _on_start() -> void:
 	_spawn_iron_suit()
 	hud.enter_game()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - step onto it to suit up and fly. Downtown has a STOCK EXCHANGE - press E to trade - and VICE AUTOS next door to buy cars.", 10.0)
+	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - step onto it to fly. Downtown is the place to spend: STOCK EXCHANGE, VICE AUTOS (cars), STARK INDUSTRIES (suit upgrades) and VICE REALTY (safehouses) - press E at each kiosk.", 11.0)
 
 
 func _die() -> void:
@@ -226,16 +242,28 @@ func _respawn() -> void:
 	if para_node != null:
 		para_node.queue_free()
 		para_node = null
-	var s := world.find_safe_spawn()
+	# Respawn at the player's safehouse if they own one, else a safe city spot.
+	var s: Vector2
+	if Garage.active_property >= 0:
+		var home: Dictionary = PropertyCatalog.LIST[Garage.active_property]
+		s = Vector2(home.x, home.z)
+	else:
+		s = world.find_safe_spawn()
 	player_pos = Vector3(s.x, 0, s.y)
 	player_hp = player_max_hp
 	player_armor = 0.0
 	in_car = null
 	_near_exchange = false
 	_near_dealership = false
+	_near_stark = false
+	_near_realtor = false
 	player_node.visible = true
 	GameState.init_weapon_ammo()
-	_show_objective("You're back. Try not to die.")
+	if Garage.active_property >= 0:
+		_show_objective("Home at %s. Try not to die." %
+			PropertyCatalog.LIST[Garage.active_property].name)
+	else:
+		_show_objective("You're back. Try not to die.")
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -278,6 +306,10 @@ func _handle_key(keycode: int) -> void:
 					_open_terminal()
 				elif _near_dealership:
 					_open_dealership()
+				elif _near_stark:
+					_open_stark()
+				elif _near_realtor:
+					_open_realtor()
 		KEY_Q, KEY_TAB:
 			_switch_weapon(1)
 		KEY_Z:
@@ -319,6 +351,20 @@ func _open_dealership() -> void:
 	GameState.paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	dealership_terminal.open()
+
+
+func _open_stark() -> void:
+	terminal_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	suit_terminal.open()
+
+
+func _open_realtor() -> void:
+	terminal_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	realtor_terminal.open()
 
 
 ## Drop the player's owned car `catalog_idx` onto the dealership lot. The
@@ -475,6 +521,22 @@ func _update_on_foot(dt: float) -> void:
 	if near_dealership and not _near_dealership:
 		_show_objective("Vice Autos - press E to buy a car.", 4.0)
 	_near_dealership = near_dealership
+
+	# Walk up to the Stark lab kiosk to buy Iron Man suit upgrades (press E).
+	var kd := Vector2(CityWorld.STARK_LAB.x - player_pos.x,
+		CityWorld.STARK_LAB.z - player_pos.z).length()
+	var near_stark := kd < 3.6
+	if near_stark and not _near_stark:
+		_show_objective("Stark Industries - press E to upgrade your suit.", 4.0)
+	_near_stark = near_stark
+
+	# Walk up to the realtor kiosk to buy safehouse property (press E).
+	var rd := Vector2(CityWorld.REALTOR.x - player_pos.x,
+		CityWorld.REALTOR.z - player_pos.z).length()
+	var near_realtor := rd < 3.6
+	if near_realtor and not _near_realtor:
+		_show_objective("Vice Realty - press E to buy a safehouse.", 4.0)
+	_near_realtor = near_realtor
 
 
 # ---------------- Car ----------------
@@ -1003,12 +1065,13 @@ func _update_suiting(dt: float) -> void:
 
 
 func _update_suit(dt: float) -> void:
+	var st := Garage.suit_stats()
 	var ascend := (1.0 if _key(KEY_UP) else 0.0) - (1.0 if _key(KEY_DOWN) else 0.0)
 	var mx := (1.0 if _key(KEY_D) else 0.0) - (1.0 if _key(KEY_A) else 0.0)
 	var mz := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
 
 	# Vertical: Up climbs, Down descends, neither holds a steady hover.
-	suit_vy = move_toward(suit_vy, ascend * 17.0, 46.0 * dt)
+	suit_vy = move_toward(suit_vy, ascend * st.fly_v, 46.0 * dt)
 	player_pos.y = clampf(player_pos.y + suit_vy * dt, 0.0, 220.0)
 	if player_pos.y <= 0.0:
 		player_pos.y = 0.0
@@ -1022,7 +1085,7 @@ func _update_suit(dt: float) -> void:
 		mz /= l
 		var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
 		var rgt := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
-		var spd: float = 26.0 if airborne else 7.0
+		var spd: float = st.fly_h if airborne else 7.0
 		if _key(KEY_SHIFT):
 			spd *= 1.7
 		var dx := (rgt.x * mx + fwd.x * mz) * spd * dt
@@ -1044,28 +1107,35 @@ func _update_suit(dt: float) -> void:
 				0x8fe6ff, 0.3, (randf() - 0.5) * 1.5, -7.0 - randf() * 4.0,
 				(randf() - 0.5) * 1.5)
 
-	# Repulsors (left mouse) and missiles (right mouse).
+	# Repulsors (left mouse) and missiles (right mouse). Missiles are only
+	# online from the Mark VI up — the Mark III fires repulsors alone.
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and _now - repulsor_at > 0.13:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) \
+			and _now - repulsor_at > st.repulsor_cd:
 			repulsor_at = _now
-			_fire_repulsor()
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and _now - missile_at > 0.85:
+			_fire_repulsor(st)
+		if st.has_missiles and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) \
+			and _now - missile_at > st.missile_cd:
 			missile_at = _now
-			_fire_missile()
+			_fire_missile(st)
 
 
-func _fire_repulsor() -> void:
+func _fire_repulsor(st: Dictionary) -> void:
 	var dir := (-camera.global_transform.basis.z).normalized()
 	var from := Vector3(player_pos.x, player_pos.y + 1.1, player_pos.z)
-	_spawn_bullet(from, dir, REPULSOR_W, "player", _repulsor_mat, 170.0, 0.2)
+	var w := {"range": REPULSOR_RANGE, "damage": st.repulsor_dmg,
+		"explosive": false, "pellets": 1.0}
+	_spawn_bullet(from, dir, w, "player", _repulsor_mat, 170.0, 0.2)
 	_spawn_sparks(from.x + dir.x, from.y + dir.y, from.z + dir.z, 2)
 	AudioFX.shoot()
 
 
-func _fire_missile() -> void:
+func _fire_missile(st: Dictionary) -> void:
 	var dir := (-camera.global_transform.basis.z).normalized()
 	var from := Vector3(player_pos.x, player_pos.y + 1.3, player_pos.z)
-	_spawn_bullet(from, dir, MISSILE_W, "player", _missile_mat, 82.0, 0.36)
+	var w := {"range": MISSILE_RANGE, "damage": st.missile_dmg,
+		"explosive": true, "pellets": 1.0}
+	_spawn_bullet(from, dir, w, "player", _missile_mat, 82.0, 0.36)
 	AudioFX.shoot()
 
 

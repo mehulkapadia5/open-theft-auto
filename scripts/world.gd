@@ -21,6 +21,10 @@ const HELIPAD := {"x": 152.0, "z": 92.0}                             # helicopte
 const EXCHANGE := {"x": 0.0, "z": -6.0}
 # Car dealership kiosk, one block north of the exchange — walk up and press E.
 const DEALERSHIP := {"x": 0.0, "z": 26.0}
+# Stark lab kiosk (Iron Man suits), one block west of the exchange.
+const STARK_LAB := {"x": -32.0, "z": -6.0}
+# Realtor kiosk (safehouse property), one block east of the exchange.
+const REALTOR := {"x": 32.0, "z": -6.0}
 
 ## True inside the grass airfield rectangle (runways + overrun + taxiways).
 func on_airfield(x: float, z: float) -> bool:
@@ -153,6 +157,16 @@ func _build_city() -> void:
 			if bx == 5 and bz == 6:
 				_build_dealership(cx, cz)                # the car dealership
 				continue
+			if bx == 4 and bz == 5:
+				_build_stark_lab(cx, cz)                 # the Iron Man suit lab
+				continue
+			if bx == 6 and bz == 5:
+				_build_realtor(cx, cz)                   # the safehouse realtor
+				continue
+			var house_idx := _safehouse_at(cx, cz)
+			if house_idx >= 0:
+				_build_safehouse(house_idx)              # a buyable safehouse
+				continue
 			match _district_of(cx, cz, bx, bz):
 				"river":
 					pass
@@ -180,9 +194,14 @@ func _build_city() -> void:
 			continue
 		if collides_at(x, z, 1.5):
 			continue
-		var near_road := fmod(x + WORLD_HALF, BLOCK) - ROAD_W / 2.0 < ROAD_W \
-			or fmod(z + WORLD_HALF, BLOCK) - ROAD_W / 2.0 < ROAD_W
-		if not near_road:
+		# Distance to the nearest road centreline on each axis. A tree must sit
+		# clear of the road AND its sidewalk — never on the tarmac.
+		var fx := fmod(x + WORLD_HALF, BLOCK)
+		var fz := fmod(z + WORLD_HALF, BLOCK)
+		var dxl: float = minf(fx, BLOCK - fx)
+		var dzl: float = minf(fz, BLOCK - fz)
+		var off := ROAD_W / 2.0 + 3.0
+		if dxl < off or dzl < off:
 			continue
 		_add_leafy_tree(x, z)
 
@@ -372,6 +391,158 @@ func _add_display_car(x: float, z: float, color: int) -> void:
 		tire.rotation.z = PI / 2.0
 		tire.position = Vector3(x + wp.x, 0.46, z + wp.y)
 		add_child(tire)
+
+
+## The Stark lab — a sleek dark tower ringed with arc-reactor blue light, where
+## the player buys Iron Man suit upgrades. Kiosk out front, tower solid.
+func _build_stark_lab(cx: float, cz: float) -> void:
+	var blue := Color("6fd8ff")
+	var plaza_sz := BLOCK - ROAD_W
+	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0x26282e), 0.85))
+	plaza.position = Vector3(cx, 0.07, cz)
+	add_child(plaza)
+	var trim := Build.emissive(Build.hex(0x0c2230), blue, 1.2)
+	for edge in [-1.0, 1.0]:
+		var strip := Build.box(plaza_sz, 0.16, 0.5, trim)
+		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
+		add_child(strip)
+
+	var tw := 13.0
+	var td := 10.0
+	var th := 58.0
+	var tz := cz + 3.0
+	var tower := Build.box(tw, th, td, Build.mat(Build.hex(0x1d2026), 0.3, 0.6))
+	tower.position = Vector3(cx, th / 2.0 + 0.14, tz)
+	add_child(tower)
+	buildings.append({"x": cx, "z": tz, "w": tw, "d": td, "h": th})
+	var band := Build.emissive(Build.hex(0x0c2230), blue, 2.0)
+	for by in [11.0, 24.0, 37.0, 50.0]:
+		var stripe := Build.box(tw + 0.3, 0.8, td + 0.3, band)
+		stripe.position = Vector3(cx, by, tz)
+		add_child(stripe)
+	# A glowing arc-reactor disc set into the tower face.
+	var reactor := Build.emissive(Build.hex(0xeafcff), Color("d8f6ff"), 3.4)
+	var disc := Build.cyl(2.4, 2.4, 0.3, 24, reactor)
+	disc.rotation.x = PI / 2.0
+	disc.position = Vector3(cx, 16.0, tz - td / 2.0 - 0.2)
+	add_child(disc)
+	var sign_text := Label3D.new()
+	sign_text.text = "STARK\nINDUSTRIES"
+	sign_text.font_size = 76
+	sign_text.pixel_size = 0.013
+	sign_text.modulate = Color("d8f6ff")
+	sign_text.outline_modulate = Color(0, 0, 0, 0.8)
+	sign_text.position = Vector3(cx, th - 8.0, tz - td / 2.0 - 0.3)
+	add_child(sign_text)
+
+	_build_terminal_kiosk(STARK_LAB.x, STARK_LAB.z, "SUITS  ·  PRESS E",
+		blue, Color("c8f0ff"))
+
+
+## The realtor office — a low glass-and-stone building where the player buys
+## safehouse deeds. Kiosk out front, office solid.
+func _build_realtor(cx: float, cz: float) -> void:
+	var teal := Color("7fd0c0")
+	var plaza_sz := BLOCK - ROAD_W
+	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0x595048), 0.9))
+	plaza.position = Vector3(cx, 0.07, cz)
+	add_child(plaza)
+	var trim := Build.emissive(Build.hex(0x123028), teal, 1.0)
+	for edge in [-1.0, 1.0]:
+		var strip := Build.box(plaza_sz, 0.16, 0.5, trim)
+		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
+		add_child(strip)
+
+	var ow := 15.0
+	var od := 9.0
+	var oh := 13.0
+	var oz := cz + 3.5
+	var office := Build.box(ow, oh, od, Build.mat(Build.hex(0x8a7256), 0.7, 0.05))
+	office.position = Vector3(cx, oh / 2.0 + 0.14, oz)
+	add_child(office)
+	buildings.append({"x": cx, "z": oz, "w": ow, "d": od, "h": oh})
+	var glass := Build.mat(Build.hex(0x2a3a3a), 0.1, 0.3)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.albedo_color.a = 0.55
+	var front := Build.box(ow - 2.0, oh - 3.0, 0.3, glass)
+	front.position = Vector3(cx, oh / 2.0 + 0.6, oz - od / 2.0 - 0.16)
+	add_child(front)
+	var sign_panel := Build.emissive(Build.hex(0x0f221c), teal, 2.2)
+	var sign := Build.box(12.0, 2.4, 0.4, sign_panel)
+	sign.position = Vector3(cx, oh + 1.3, oz - od / 2.0 - 0.25)
+	add_child(sign)
+	var sign_text := Label3D.new()
+	sign_text.text = "VICE REALTY"
+	sign_text.font_size = 80
+	sign_text.pixel_size = 0.013
+	sign_text.modulate = Color("0f221c")
+	sign_text.outline_size = 0
+	sign_text.position = Vector3(cx, oh + 1.3, oz - od / 2.0 - 0.46)
+	add_child(sign_text)
+
+	_build_terminal_kiosk(REALTOR.x, REALTOR.z, "PROPERTY  ·  PRESS E",
+		teal, Color("c0eee2"))
+
+
+## Index of the safehouse whose block centre is (cx, cz), or -1 if none.
+func _safehouse_at(cx: float, cz: float) -> int:
+	for i in PropertyCatalog.LIST.size():
+		var p: Dictionary = PropertyCatalog.LIST[i]
+		if is_equal_approx(cx, p.x) and is_equal_approx(cz, p.z):
+			return i
+	return -1
+
+
+## A buyable safehouse — a tidy two-storey home with a lawn, driveway, a glowing
+## doorway and a name sign. The respawn spot (PropertyCatalog x/z) is the front
+## yard; the house sits just behind it so respawning never lands inside a wall.
+func _build_safehouse(idx: int) -> void:
+	var p: Dictionary = PropertyCatalog.LIST[idx]
+	var fx: float = p.x
+	var fz: float = p.z
+	var hz := fz + 6.0                       # house centre, behind the front yard
+
+	var lawn := Build.box(20.0, 0.12, 18.0, Build.mat(Build.hex(0x6f8a4e), 0.95))
+	lawn.position = Vector3(fx, 0.06, fz + 3.0)
+	add_child(lawn)
+	var drive := Build.box(4.5, 0.14, 7.0, Build.mat(Build.hex(0x6b6b72), 0.9))
+	drive.position = Vector3(fx, 0.08, fz - 1.0)
+	add_child(drive)
+
+	var hw := 10.0
+	var hd := 8.0
+	var hh := 7.5
+	var house := Build.box(hw, hh, hd, Build.mat(Build.hex(0xe3dcc8), 0.85))
+	house.position = Vector3(fx, hh / 2.0 + 0.14, hz)
+	add_child(house)
+	buildings.append({"x": fx, "z": hz, "w": hw, "d": hd, "h": hh})
+	var roof := Build.box(hw + 1.0, 0.6, hd + 1.0, Build.mat(Build.hex(0x4a4a52), 0.8))
+	roof.position = Vector3(fx, hh + 0.3, hz)
+	add_child(roof)
+	var upper := Build.box(hw - 3.0, 2.4, hd - 2.0, Build.mat(Build.hex(0xc99878), 0.85))
+	upper.position = Vector3(fx, hh + 1.5, hz)
+	add_child(upper)
+
+	# Glowing doorway facing the front yard.
+	var door := Build.emissive(Build.hex(0x2a2418), Color("ffd98a"), 1.6)
+	var door_mi := Build.box(2.0, 3.4, 0.3, door)
+	door_mi.position = Vector3(fx, 1.85, hz - hd / 2.0 - 0.1)
+	add_child(door_mi)
+	for wx in [-3.0, 3.0]:
+		var win := Build.emissive(Build.hex(0x2a2a20), Color("fff0b0"), 0.8)
+		var win_mi := Build.box(1.6, 1.6, 0.3, win)
+		win_mi.position = Vector3(fx + wx, 2.4, hz - hd / 2.0 - 0.1)
+		add_child(win_mi)
+
+	var sign_text := Label3D.new()
+	sign_text.text = p.name
+	sign_text.font_size = 56
+	sign_text.pixel_size = 0.01
+	sign_text.modulate = Color("fff0c8")
+	sign_text.outline_modulate = Color(0, 0, 0, 0.85)
+	sign_text.position = Vector3(fx, hh + 3.6, hz - hd / 2.0)
+	sign_text.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(sign_text)
 
 
 ## A residential villa — house, pitched roof, garage, pool, lawn and fence.
