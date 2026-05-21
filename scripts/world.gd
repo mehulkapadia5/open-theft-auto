@@ -19,6 +19,8 @@ const AIRFIELD := {"x0": 30.0, "x1": 180.0, "z0": 0.0, "z1": 820.0}
 const HELIPAD := {"x": 152.0, "z": 92.0}                             # helicopter pad
 # Stock-exchange kiosk in the dead-centre downtown block — walk up and press E.
 const EXCHANGE := {"x": 0.0, "z": -6.0}
+# Car dealership kiosk, one block north of the exchange — walk up and press E.
+const DEALERSHIP := {"x": 0.0, "z": 26.0}
 
 ## True inside the grass airfield rectangle (runways + overrun + taxiways).
 func on_airfield(x: float, z: float) -> bool:
@@ -148,6 +150,9 @@ func _build_city() -> void:
 			if bx == 5 and bz == 5:
 				_build_exchange(cx, cz)                  # the stock exchange
 				continue
+			if bx == 5 and bz == 6:
+				_build_dealership(cx, cz)                # the car dealership
+				continue
 			match _district_of(cx, cz, bx, bz):
 				"river":
 					pass
@@ -268,8 +273,10 @@ func _build_exchange(cx: float, cz: float) -> void:
 
 
 ## A free-standing computer terminal — pedestal, angled glowing monitor, and a
-## floating billboard prompt. This is the EXCHANGE interaction point.
-func _build_terminal_kiosk(x: float, z: float) -> void:
+## floating billboard prompt. Shared by the exchange and the dealership; the
+## prompt text and glow colour identify which interaction point it is.
+func _build_terminal_kiosk(x: float, z: float, prompt_text := "STOCKS  ·  PRESS E",
+		screen_glow := Color("46e6a4"), prompt_color := Color("9ff0cf")) -> void:
 	var dark := Build.mat(Build.hex(0x1c1f26), 0.5, 0.35)
 	var base := Build.cyl(1.0, 1.2, 0.3, 16, dark)
 	base.position = Vector3(x, 0.15, z)
@@ -277,7 +284,7 @@ func _build_terminal_kiosk(x: float, z: float) -> void:
 	var pedestal := Build.box(1.3, 1.1, 0.8, dark)
 	pedestal.position = Vector3(x, 0.85, z)
 	add_child(pedestal)
-	var screen_m := Build.emissive(Build.hex(0x0a1f1a), Build.hex(0x46e6a4), 2.8)
+	var screen_m := Build.emissive(Build.hex(0x0a1f1a), screen_glow, 2.8)
 	var housing := Build.box(1.62, 1.14, 0.16, dark)
 	housing.position = Vector3(x, 1.7, z - 0.04)
 	housing.rotation.x = -0.32
@@ -287,14 +294,84 @@ func _build_terminal_kiosk(x: float, z: float) -> void:
 	screen.rotation.x = -0.32
 	add_child(screen)
 	var prompt := Label3D.new()
-	prompt.text = "STOCKS  ·  PRESS E"
+	prompt.text = prompt_text
 	prompt.font_size = 56
 	prompt.pixel_size = 0.006
-	prompt.modulate = Color("9ff0cf")
+	prompt.modulate = prompt_color
 	prompt.outline_modulate = Color(0, 0, 0, 0.8)
 	prompt.position = Vector3(x, 2.7, z)
 	prompt.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(prompt)
+
+
+## The car dealership — a glass-fronted showroom, a forecourt, a row of display
+## cars on the lot, and the trading kiosk the player walks up to. The showroom
+## is solid; the kiosk and display cars are walk-through.
+func _build_dealership(cx: float, cz: float) -> void:
+	var amber := Color("e6a93f")
+	var plaza_sz := BLOCK - ROAD_W
+	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0x4a4a52), 0.9))
+	plaza.position = Vector3(cx, 0.07, cz)
+	add_child(plaza)
+	var trim := Build.emissive(Build.hex(0x2e2410), Build.hex(0xe6a93f), 1.0)
+	for edge in [-1.0, 1.0]:
+		var strip := Build.box(plaza_sz, 0.16, 0.5, trim)
+		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
+		add_child(strip)
+
+	# Glass-fronted showroom toward the back of the block.
+	var sw := 16.0
+	var sd := 8.0
+	var sh := 9.0
+	var sz := cz + 4.0
+	var showroom := Build.box(sw, sh, sd, Build.mat(Build.hex(0x33414f), 0.18, 0.3))
+	showroom.position = Vector3(cx, sh / 2.0 + 0.14, sz)
+	add_child(showroom)
+	buildings.append({"x": cx, "z": sz, "w": sw, "d": sd, "h": sh})
+	var sign_panel := Build.emissive(Build.hex(0x1b1305), Build.hex(0xffc861), 2.4)
+	var sign := Build.box(13.0, 2.6, 0.4, sign_panel)
+	sign.position = Vector3(cx, sh + 1.4, sz - sd / 2.0 - 0.25)
+	add_child(sign)
+	var sign_text := Label3D.new()
+	sign_text.text = "VICE AUTOS"
+	sign_text.font_size = 84
+	sign_text.pixel_size = 0.013
+	sign_text.modulate = Color("1b1305")
+	sign_text.outline_size = 0
+	sign_text.position = Vector3(cx, sh + 1.4, sz - sd / 2.0 - 0.46)
+	add_child(sign_text)
+
+	# A short row of display cars parked on raised pads out front.
+	var pad_m := Build.mat(Build.hex(0x5a5a63), 0.85)
+	var show_cols := [0xc23a3a, 0xdcdcda, 0x2b384e]
+	for i in 3:
+		var px := cx - 5.0 + i * 5.0
+		var pz := cz - 1.0
+		var pad := Build.cyl(1.9, 1.9, 0.12, 18, pad_m)
+		pad.position = Vector3(px, 0.2, pz)
+		add_child(pad)
+		_add_display_car(px, pz, show_cols[i])
+
+	_build_terminal_kiosk(DEALERSHIP.x, DEALERSHIP.z, "VEHICLES  ·  PRESS E",
+		Color("ffc861"), Color("ffdca0"))
+
+
+## A small static car silhouette — pure decoration on the showroom lot.
+func _add_display_car(x: float, z: float, color: int) -> void:
+	var body_m := Build.mat(Build.hex(color), 0.4, 0.3)
+	var glass_m := Build.mat(Build.hex(0x0a1426), 0.1, 0.0)
+	var body := Build.box(1.9, 0.55, 4.0, body_m)
+	body.position = Vector3(x, 0.7, z)
+	add_child(body)
+	var cabin := Build.box(1.6, 0.62, 1.8, glass_m)
+	cabin.position = Vector3(x, 1.25, z - 0.1)
+	add_child(cabin)
+	var tire_m := Build.mat(Build.hex(0x0a0a0a), 0.95)
+	for wp in [Vector2(-0.95, -1.3), Vector2(0.95, -1.3), Vector2(-0.95, 1.3), Vector2(0.95, 1.3)]:
+		var tire := Build.cyl(0.4, 0.4, 0.34, 14, tire_m)
+		tire.rotation.z = PI / 2.0
+		tire.position = Vector3(x + wp.x, 0.46, z + wp.y)
+		add_child(tire)
 
 
 ## A residential villa — house, pitched roof, garage, pool, lawn and fence.

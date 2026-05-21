@@ -224,7 +224,7 @@ func _build_boot() -> void:
 	var controls := _label(
 		"WASD move / drive    Mouse look    L-Click shoot    F enter/exit vehicle\n"
 		+ "Q / Tab / Z weapons    1-9 pick    scroll cycle    SHIFT sprint / boost\n"
-		+ "SPACE handbrake    E trade stocks    M mute    R respawn / heal    ESC release mouse",
+		+ "SPACE handbrake    E trade stocks / buy cars    M mute    R respawn / heal    ESC release mouse",
 		15, Color(0.55, 0.57, 0.6))
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(controls)

@@ -20,8 +20,11 @@ var env: Environment
 var sky_mat: ProceduralSkyMaterial
 var hud: HUD
 var stock_terminal: StockTerminal
-var terminal_open := false       # true while the trading terminal is on screen
+var dealership_terminal: DealershipTerminal
+var terminal_open := false       # true while either kiosk terminal is on screen
 var _near_exchange := false      # on foot and within reach of the exchange kiosk
+var _near_dealership := false    # on foot and within reach of the dealership kiosk
+var _owned_spawn = null          # the player's last car spawned onto the lot
 var player_node: Node3D
 var weapon_holder: Node3D       # holds the visible weapon prop in the player's hand
 
@@ -127,6 +130,11 @@ func _ready() -> void:
 	add_child(stock_terminal)
 	stock_terminal.closed.connect(_on_terminal_closed)
 
+	dealership_terminal = DealershipTerminal.new()
+	add_child(dealership_terminal)
+	dealership_terminal.closed.connect(_on_terminal_closed)
+	dealership_terminal.spawn_requested.connect(_spawn_owned_vehicle)
+
 	GameState.started = false
 	GameState.paused = false
 	GameState.init_weapon_ammo()
@@ -166,8 +174,11 @@ func _on_start() -> void:
 	GameState.paused = false
 	GameState.reset_run()
 	StockMarket.reset()
+	Garage.reset()
 	terminal_open = false
 	_near_exchange = false
+	_near_dealership = false
+	_owned_spawn = null
 	var s := world.find_safe_spawn()
 	player_pos = Vector3(s.x, 0, s.y)
 	player_node.position = player_pos
@@ -180,7 +191,7 @@ func _on_start() -> void:
 	_spawn_iron_suit()
 	hud.enter_game()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - step onto it to suit up and fly. Downtown has a STOCK EXCHANGE - press E at the terminal to trade.", 10.0)
+	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - step onto it to suit up and fly. Downtown has a STOCK EXCHANGE - press E to trade - and VICE AUTOS next door to buy cars.", 10.0)
 
 
 func _die() -> void:
@@ -220,6 +231,8 @@ func _respawn() -> void:
 	player_hp = player_max_hp
 	player_armor = 0.0
 	in_car = null
+	_near_exchange = false
+	_near_dealership = false
 	player_node.visible = true
 	GameState.init_weapon_ammo()
 	_show_objective("You're back. Try not to die.")
@@ -259,9 +272,12 @@ func _handle_key(keycode: int) -> void:
 			elif suit_state == "none":
 				_try_enter_exit()
 		KEY_E:
-			if not terminal_open and _near_exchange and in_car == null \
+			if not terminal_open and in_car == null \
 				and suit_state == "none" and not parachuting:
-				_open_terminal()
+				if _near_exchange:
+					_open_terminal()
+				elif _near_dealership:
+					_open_dealership()
 		KEY_Q, KEY_TAB:
 			_switch_weapon(1)
 		KEY_Z:
@@ -290,12 +306,40 @@ func _key(k: int) -> bool:
 	return Input.is_physical_key_pressed(k)
 
 
-# ---------------- Stock-trading terminal ----------------
+# ---------------- Kiosk terminals ----------------
 func _open_terminal() -> void:
 	terminal_open = true
 	GameState.paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	stock_terminal.open()
+
+
+func _open_dealership() -> void:
+	terminal_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	dealership_terminal.open()
+
+
+## Drop the player's owned car `catalog_idx` onto the dealership lot. The
+## previous lot car (if still parked and not being driven) is cleared first so
+## owned spawns never pile up.
+func _spawn_owned_vehicle(catalog_idx: int) -> void:
+	var car: Dictionary = VehicleCatalog.LIST[catalog_idx]
+	if _owned_spawn != null and _owned_spawn != in_car and _owned_spawn in vehicles:
+		_owned_spawn.node.queue_free()
+		vehicles.erase(_owned_spawn)
+	_owned_spawn = null
+	var sx: float = CityWorld.DEALERSHIP.x + 7.0
+	var sz: float = CityWorld.DEALERSHIP.z + 2.0
+	var v := _make_vehicle(sx, sz, car.color)
+	v.max_speed = car.max_speed
+	v.yaw = 0.0
+	v.node.rotation.y = v.yaw
+	v["owned_spawn"] = true
+	vehicles.append(v)
+	_owned_spawn = v
+	_show_objective("Your %s is on the lot — walk over and press F to drive." % car.name, 5.0)
 
 
 func _on_terminal_closed() -> void:
@@ -423,6 +467,14 @@ func _update_on_foot(dt: float) -> void:
 	if near_exchange and not _near_exchange:
 		_show_objective("Trading terminal - press E to buy and sell stocks.", 4.0)
 	_near_exchange = near_exchange
+
+	# Walk up to the dealership kiosk to buy and spawn cars (press E).
+	var dd := Vector2(CityWorld.DEALERSHIP.x - player_pos.x,
+		CityWorld.DEALERSHIP.z - player_pos.z).length()
+	var near_dealership := dd < 3.6
+	if near_dealership and not _near_dealership:
+		_show_objective("Vice Autos - press E to buy a car.", 4.0)
+	_near_dealership = near_dealership
 
 
 # ---------------- Car ----------------
