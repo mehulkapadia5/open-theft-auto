@@ -376,12 +376,13 @@ func _open_realtor() -> void:
 func _on_suit_purchased() -> void:
 	var nm: String = Garage.suit_stats().name
 	if suit_state == "none" and suit_node != null:
+		_refresh_suit_model()            # show the bought tier's livery
 		suit_node.position = Vector3(CityWorld.STARK_SUIT_PAD.x, 0.0,
 			CityWorld.STARK_SUIT_PAD.z)
 		suit_armed = true
 		_show_objective("%s delivered to the SUIT BAY pad outside — step onto it to suit up." % nm, 7.0)
 	else:
-		_show_objective("Suit upgraded to %s." % nm, 4.0)
+		_show_objective("Suit upgraded to %s — its new look applies next time you suit up." % nm, 4.0)
 
 
 ## Drop the player's owned car `catalog_idx` onto the dealership lot. The
@@ -891,11 +892,26 @@ func _make_parachute() -> Node3D:
 ## Builds the armoured humanoid — same limb layout as Human (so the walk
 ## animation works), plus glowing arc reactor, hand repulsors and helmet eyes.
 ## meta "pieces" holds every plate in feet-to-head order for the suit-up reveal.
-func _build_iron_suit() -> Node3D:
+func _build_iron_suit(tier := 1) -> Node3D:
 	var g := Node3D.new()
-	var red := Build.mat(Build.hex(0xb01a1a), 0.34, 0.55)
-	var gold := Build.mat(Build.hex(0xe0ad28), 0.3, 0.7)
-	var dark := Build.mat(Build.hex(0x2a2a30), 0.5, 0.5)
+	# Each tier wears its own livery: classic red/gold Mark III, crimson and
+	# silver Mark VI, gunmetal War Machine (which also gets a shoulder cannon).
+	var primary: StandardMaterial3D
+	var secondary: StandardMaterial3D
+	var dark: StandardMaterial3D
+	match tier:
+		2:
+			primary = Build.mat(Build.hex(0x9c1216), 0.32, 0.55)
+			secondary = Build.mat(Build.hex(0xc6cad2), 0.3, 0.8)
+			dark = Build.mat(Build.hex(0x26262c), 0.5, 0.5)
+		3:
+			primary = Build.mat(Build.hex(0x52565d), 0.4, 0.7)
+			secondary = Build.mat(Build.hex(0x303338), 0.45, 0.6)
+			dark = Build.mat(Build.hex(0x1a1b20), 0.5, 0.5)
+		_:
+			primary = Build.mat(Build.hex(0xb01a1a), 0.34, 0.55)
+			secondary = Build.mat(Build.hex(0xe0ad28), 0.3, 0.7)
+			dark = Build.mat(Build.hex(0x2a2a30), 0.5, 0.5)
 	var glow := Build.emissive(Build.hex(0x9fe9ff), Build.hex(0x9fe9ff), 4.5)
 	var eyeglow := Build.emissive(Build.hex(0xeaffff), Build.hex(0xd6f4ff), 4.0)
 	var pieces: Array = []
@@ -907,13 +923,13 @@ func _build_iron_suit() -> Node3D:
 	legR.position = Vector3(0.16, 1.0, 0)
 	g.add_child(legR)
 	for leg in [legL, legR]:
-		var thigh := Build.box(0.27, 0.46, 0.29, red)
+		var thigh := Build.box(0.27, 0.46, 0.29, primary)
 		thigh.position.y = -0.225
 		leg.add_child(thigh)
-		var shin := Build.box(0.25, 0.46, 0.27, gold)
+		var shin := Build.box(0.25, 0.46, 0.27, secondary)
 		shin.position.y = -0.675
 		leg.add_child(shin)
-		var boot := Build.box(0.27, 0.15, 0.42, red)
+		var boot := Build.box(0.27, 0.15, 0.42, primary)
 		boot.position = Vector3(0, -0.95, 0.06)
 		leg.add_child(boot)
 		pieces.append(boot)
@@ -924,11 +940,11 @@ func _build_iron_suit() -> Node3D:
 	pelvis.position.y = 1.06
 	g.add_child(pelvis)
 	pieces.append(pelvis)
-	var abs_plate := Build.box(0.5, 0.3, 0.36, gold)
+	var abs_plate := Build.box(0.5, 0.3, 0.36, secondary)
 	abs_plate.position.y = 1.14
 	g.add_child(abs_plate)
 	pieces.append(abs_plate)
-	var torso := Build.box(0.64, 0.72, 0.4, red)
+	var torso := Build.box(0.64, 0.72, 0.4, primary)
 	torso.position.y = 1.42
 	g.add_child(torso)
 	pieces.append(torso)
@@ -937,10 +953,22 @@ func _build_iron_suit() -> Node3D:
 	reactor.position = Vector3(0, 1.55, 0.21)
 	g.add_child(reactor)
 	pieces.append(reactor)
-	var shoulders := Build.box(0.88, 0.24, 0.43, red)
+	var shoulders := Build.box(0.88, 0.24, 0.43, primary)
 	shoulders.position.y = 1.76
 	g.add_child(shoulders)
 	pieces.append(shoulders)
+
+	# War Machine's shoulder-mounted cannon.
+	if tier >= 3:
+		var mount := Build.box(0.26, 0.24, 0.36, dark)
+		mount.position = Vector3(0.34, 2.0, -0.02)
+		g.add_child(mount)
+		pieces.append(mount)
+		var barrel := Build.cyl(0.08, 0.08, 0.54, 10, dark)
+		barrel.rotation.x = PI / 2.0
+		barrel.position = Vector3(0.34, 2.02, 0.34)
+		g.add_child(barrel)
+		pieces.append(barrel)
 
 	var armL := Node3D.new()
 	armL.position = Vector3(-0.43, 1.74, 0)
@@ -949,10 +977,10 @@ func _build_iron_suit() -> Node3D:
 	armR.position = Vector3(0.43, 1.74, 0)
 	g.add_child(armR)
 	for arm in [armL, armR]:
-		var upper := Build.box(0.19, 0.42, 0.19, red)
+		var upper := Build.box(0.19, 0.42, 0.19, primary)
 		upper.position.y = -0.21
 		arm.add_child(upper)
-		var fore := Build.box(0.18, 0.38, 0.18, gold)
+		var fore := Build.box(0.18, 0.38, 0.18, secondary)
 		fore.position.y = -0.6
 		arm.add_child(fore)
 		var hand := Build.box(0.17, 0.15, 0.17, dark)
@@ -969,10 +997,10 @@ func _build_iron_suit() -> Node3D:
 	var headG := Node3D.new()
 	headG.position.y = 1.93
 	g.add_child(headG)
-	var helmet := Build.box(0.35, 0.37, 0.35, red)
+	var helmet := Build.box(0.35, 0.37, 0.35, primary)
 	headG.add_child(helmet)
 	pieces.append(helmet)
-	var face := Build.box(0.29, 0.24, 0.07, gold)
+	var face := Build.box(0.29, 0.24, 0.07, secondary)
 	face.position = Vector3(0, -0.03, 0.16)
 	headG.add_child(face)
 	pieces.append(face)
@@ -1015,7 +1043,22 @@ func _spawn_iron_suit() -> void:
 	suit_armed = true
 
 
+## Rebuild the parked suit so its model matches the currently-owned tier.
+## Only safe while the suit is parked ("none"), not mid-flight.
+func _refresh_suit_model() -> void:
+	if suit_node == null:
+		return
+	var pos := suit_node.position
+	var rot := suit_node.rotation
+	suit_node.queue_free()
+	suit_node = _build_iron_suit(Garage.suit_tier)
+	add_child(suit_node)
+	suit_node.position = pos
+	suit_node.rotation = rot
+
+
 func _begin_suit() -> void:
+	_refresh_suit_model()                # wear the model of the owned tier
 	suit_state = "suiting"
 	suit_timer = 0.0
 	suit_armed = false
