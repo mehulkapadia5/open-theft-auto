@@ -19,6 +19,9 @@ var sun: DirectionalLight3D
 var env: Environment
 var sky_mat: ProceduralSkyMaterial
 var hud: HUD
+var stock_terminal: StockTerminal
+var terminal_open := false       # true while the trading terminal is on screen
+var _near_exchange := false      # on foot and within reach of the exchange kiosk
 var player_node: Node3D
 var weapon_holder: Node3D       # holds the visible weapon prop in the player's hand
 
@@ -71,7 +74,9 @@ var _now := 0.0
 var last_fire_at := -10.0
 var cop_timer := 0.0
 var wanted_decay := 0.0
+var vip_spawn_timer := 0.0       # countdown to topping the streets back up with VIPs
 var _mouse_rel := Vector2.ZERO
+const VIP_TARGET := 4            # VIPs are unlimited — kept topped up to this many
 
 # ---------------- Shared materials ----------------
 var head_mat: StandardMaterial3D
@@ -118,6 +123,10 @@ func _ready() -> void:
 	hud.start_pressed.connect(_on_start)
 	hud.respawn_pressed.connect(_respawn)
 
+	stock_terminal = StockTerminal.new()
+	add_child(stock_terminal)
+	stock_terminal.closed.connect(_on_terminal_closed)
+
 	GameState.started = false
 	GameState.paused = false
 	GameState.init_weapon_ammo()
@@ -156,6 +165,9 @@ func _on_start() -> void:
 	GameState.started = true
 	GameState.paused = false
 	GameState.reset_run()
+	StockMarket.reset()
+	terminal_open = false
+	_near_exchange = false
 	var s := world.find_safe_spawn()
 	player_pos = Vector3(s.x, 0, s.y)
 	player_node.position = player_pos
@@ -164,11 +176,11 @@ func _on_start() -> void:
 	_spawn_airport_aircraft()
 	for i in 40:
 		_spawn_npc()
-	_spawn_vip_groups(3)
+	_spawn_vip_groups(VIP_TARGET)
 	_spawn_iron_suit()
 	hud.enter_game()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - step onto it to suit up and fly.", 9.0)
+	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - step onto it to suit up and fly. Downtown has a STOCK EXCHANGE - press E at the terminal to trade.", 10.0)
 
 
 func _die() -> void:
@@ -234,6 +246,9 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		_handle_key(event.keycode)
+		# Consume the key so it can't also reach the trading terminal's own
+		# close handler on the same frame it was opened.
+		get_viewport().set_input_as_handled()
 
 
 func _handle_key(keycode: int) -> void:
@@ -243,6 +258,10 @@ func _handle_key(keycode: int) -> void:
 				_unsuit()
 			elif suit_state == "none":
 				_try_enter_exit()
+		KEY_E:
+			if not terminal_open and _near_exchange and in_car == null \
+				and suit_state == "none" and not parachuting:
+				_open_terminal()
 		KEY_Q, KEY_TAB:
 			_switch_weapon(1)
 		KEY_Z:
@@ -269,6 +288,21 @@ func _handle_key(keycode: int) -> void:
 
 func _key(k: int) -> bool:
 	return Input.is_physical_key_pressed(k)
+
+
+# ---------------- Stock-trading terminal ----------------
+func _open_terminal() -> void:
+	terminal_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	stock_terminal.open()
+
+
+func _on_terminal_closed() -> void:
+	terminal_open = false
+	GameState.paused = false
+	_mouse_rel = Vector2.ZERO          # drop look-input built up while trading
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 # =====================================================================
@@ -381,6 +415,14 @@ func _update_on_foot(dt: float) -> void:
 			suit_armed = true
 		if suit_armed and sd < 2.2:
 			_begin_suit()
+
+	# Walk up to the exchange kiosk to unlock the trading terminal (press E).
+	var ed := Vector2(CityWorld.EXCHANGE.x - player_pos.x,
+		CityWorld.EXCHANGE.z - player_pos.z).length()
+	var near_exchange := ed < 3.6
+	if near_exchange and not _near_exchange:
+		_show_objective("Trading terminal - press E to buy and sell stocks.", 4.0)
+	_near_exchange = near_exchange
 
 
 # ---------------- Car ----------------
@@ -507,7 +549,9 @@ func _update_plane(v: Dictionary, dt: float) -> void:
 		v.hp -= 5.0
 
 	v.node.position = v.pos
-	v.node.rotation = Vector3(v.pitch, v.yaw, v.roll)
+	# Nose points +Z, so a positive rotation.x would tip the nose DOWN — negate
+	# the pitch so holding Up rotates the nose up into a proper climb.
+	v.node.rotation = Vector3(-v.pitch, v.yaw, v.roll)
 	player_pos = v.pos
 
 	if v.hp <= 0.0 and not v.burning:
@@ -1484,9 +1528,8 @@ func _spawn_vip_groups(n: int) -> void:
 		vnode.scale = Vector3(1.07, 1.07, 1.07)
 		vnode.position = Vector3(spot.x, 0, spot.y)
 		add_child(vnode)
-		# Filthy rich — payouts run from a million up to a billion dollars.
-		var tier: int = [1_000_000, 100_000_000, 400_000_000, 1_000_000_000].pick_random()
-		var fortune: int = tier + (randi() % maxi(1, tier / 4))
+		# Rich, but not absurdly so — payouts come in four fixed tiers.
+		var fortune: int = [10_000, 50_000, 100_000, 1_000_000].pick_random()
 		var vip := {
 			"node": vnode, "pos": Vector3(spot.x, 0, spot.y), "yaw": randf() * TAU,
 			"hp": 70.0, "max_hp": 70.0, "cash": fortune,
@@ -1556,6 +1599,15 @@ func _update_vips(dt: float) -> void:
 		Human.animate(v.node, v.walk_phase, true, 0.5, 0.3)
 		keep.append(v)
 	vips = keep
+
+	# VIPs are unlimited — once one is robbed, another moves into the city.
+	if vips.size() < VIP_TARGET:
+		vip_spawn_timer -= dt
+		if vip_spawn_timer <= 0.0:
+			_spawn_vip_groups(1)
+			vip_spawn_timer = 5.0
+	else:
+		vip_spawn_timer = 5.0
 
 
 func _update_guards(dt: float) -> void:
@@ -2048,6 +2100,8 @@ func _push_hud() -> void:
 	elif suit_state == "on":
 		speed_label = "ALT"
 		speed_val = player_pos.y
+	var map_pos: Vector3 = in_car.pos if in_car != null else player_pos
+	var map_yaw: float = in_car.yaw if in_car != null else player_yaw
 	hud.update_hud({
 		"money": GameState.money,
 		"wanted": GameState.wanted,
@@ -2058,6 +2112,7 @@ func _push_hud() -> void:
 		"ammo": ("∞" if ammo == INF else str(int(ammo))),
 		"speed_label": speed_label, "speed_val": speed_val,
 		"waypoint": _waypoint_text(),
+		"map_x": map_pos.x, "map_z": map_pos.z, "map_yaw": map_yaw,
 	})
 
 

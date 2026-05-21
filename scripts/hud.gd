@@ -10,6 +10,7 @@ const TEXT := Color("e8e6e0")        # off-white
 const ACCENT := Color("8c9bab")      # desaturated steel blue
 const MONEY := Color("84a85f")       # muted cash green
 const GOLD := Color("c2a05a")        # warm brass — wanted / weapon
+const FAINT := Color(0.55, 0.57, 0.6)
 const BTN_BG := Color("23262b")      # dark button fill
 const PANEL_BG := Color(0.055, 0.06, 0.07, 0.82)
 const PANEL_EDGE := Color(0.55, 0.6, 0.65, 0.32)
@@ -19,7 +20,7 @@ var _hud: Control
 var _death: Control
 var _objective: Label
 var _money: Label
-var _stars: Label
+var _stars: Stars
 var _waypoint: Label
 var _clock: Label
 var _hp: ProgressBar
@@ -28,7 +29,110 @@ var _weapon_name: Label
 var _ammo: Label
 var _speed_label: Label
 var _speed_val: Label
+var _minimap: Minimap
 var _obj_timer := 0.0
+
+
+## A stylised top-down city minimap.
+class Minimap extends Control:
+	var px := 0.0
+	var pz := 0.0
+	var pyaw := 0.0
+
+	const ROAD := Color(0.30, 0.31, 0.35)
+	const GRASS := Color(0.30, 0.39, 0.24)
+	const WATER := Color(0.21, 0.43, 0.54)
+	const SAND := Color(0.62, 0.57, 0.42)
+
+	func set_player(x: float, z: float, yaw: float) -> void:
+		px = x
+		pz = z
+		pyaw = yaw
+		queue_redraw()
+
+	func _span() -> float:
+		return CityWorld.WORLD_HALF * 2.0 * 1.16
+
+	func _w2m(wx: float, wz: float) -> Vector2:
+		var span := _span()
+		return Vector2((wx / span + 0.5) * size.x, (wz / span + 0.5) * size.y)
+
+	func _draw() -> void:
+		var span := _span()
+		# City ground.
+		var c0 := _w2m(-CityWorld.WORLD_HALF, -CityWorld.WORLD_HALF)
+		var c1 := _w2m(CityWorld.WORLD_HALF, CityWorld.WORLD_HALF)
+		draw_rect(Rect2(c0, c1 - c0), GRASS)
+		# Beach strip along the south edge.
+		var b0 := _w2m(-CityWorld.WORLD_HALF, CityWorld.WORLD_HALF - 20.0)
+		draw_rect(Rect2(b0, Vector2(c1.x - c0.x, c1.y - b0.y)), SAND)
+		# River.
+		var rw: float = CityWorld.BLOCK - CityWorld.ROAD_W - 3.0
+		var rv0 := _w2m(CityWorld.RIVER_CX - rw / 2.0, -CityWorld.WORLD_HALF)
+		var rv1 := _w2m(CityWorld.RIVER_CX + rw / 2.0, CityWorld.WORLD_HALF)
+		draw_rect(Rect2(rv0, rv1 - rv0), WATER)
+		# Road grid.
+		for i in range(CityWorld.GRID + 1):
+			var g: float = -CityWorld.WORLD_HALF + i * CityWorld.BLOCK
+			var va := _w2m(g, -CityWorld.WORLD_HALF)
+			var vb := _w2m(g, CityWorld.WORLD_HALF)
+			draw_line(va, vb, ROAD, 2.0)
+			var ha := _w2m(-CityWorld.WORLD_HALF, g)
+			var hb := _w2m(CityWorld.WORLD_HALF, g)
+			draw_line(ha, hb, ROAD, 2.0)
+		# Landmarks.
+		_marker(CityWorld.AIRPORT.x, CityWorld.AIRPORT.z, Color("e0b050"))
+		_marker(CityWorld.EXCHANGE.x, CityWorld.EXCHANGE.z, Color("4fe6b0"))
+		# Player arrow.
+		var fwd := Vector2(sin(pyaw), cos(pyaw))
+		var perp := Vector2(fwd.y, -fwd.x)
+		var c := _w2m(clampf(px, -span / 2.0, span / 2.0),
+			clampf(pz, -span / 2.0, span / 2.0))
+		var tri := PackedVector2Array([
+			c + fwd * 9.0, c - fwd * 5.0 + perp * 6.0, c - fwd * 5.0 - perp * 6.0])
+		draw_colored_polygon(tri, Color("f4f4f0"))
+		draw_polyline(PackedVector2Array([tri[0], tri[1], tri[2], tri[0]]),
+			Color(0, 0, 0, 0.6), 1.0, true)
+
+	func _marker(wx: float, wz: float, col: Color) -> void:
+		var p := _w2m(wx, wz)
+		draw_circle(p, 4.0, col)
+		draw_circle(p, 4.0, Color(0, 0, 0, 0.5), false, 1.0)
+
+
+## The wanted level drawn as five proper stars.
+class Stars extends Control:
+	var level := 0
+	const STAR := Color("d2b25e")
+	const EMPTY := Color(0.5, 0.5, 0.52, 0.7)
+
+	func set_level(n: int) -> void:
+		if n != level:
+			level = n
+			queue_redraw()
+
+	func _draw() -> void:
+		var r := 9.0
+		var gap := 25.0
+		var cy := size.y / 2.0
+		for i in 5:
+			_star(Vector2(r + 2.0 + i * gap, cy), r, i < level)
+
+	func _star(c: Vector2, r: float, filled: bool) -> void:
+		var pts := PackedVector2Array()
+		for k in 10:
+			var ang := -PI / 2.0 + k * PI / 5.0
+			var rad: float = r if k % 2 == 0 else r * 0.42
+			pts.append(c + Vector2(cos(ang), sin(ang)) * rad)
+		if filled:
+			for k in 10:
+				draw_colored_polygon(
+					PackedVector2Array([c, pts[k], pts[(k + 1) % 10]]), STAR)
+		else:
+			var loop := PackedVector2Array(pts)
+			loop.append(pts[0])
+			draw_polyline(loop, EMPTY, 1.3, true)
+
 
 func _ready() -> void:
 	layer = 10
@@ -120,7 +224,7 @@ func _build_boot() -> void:
 	var controls := _label(
 		"WASD move / drive    Mouse look    L-Click shoot    F enter/exit vehicle\n"
 		+ "Q / Tab / Z weapons    1-9 pick    scroll cycle    SHIFT sprint / boost\n"
-		+ "SPACE handbrake    M mute    R respawn / heal    ESC release mouse",
+		+ "SPACE handbrake    E trade stocks    M mute    R respawn / heal    ESC release mouse",
 		15, Color(0.55, 0.57, 0.6))
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(controls)
@@ -148,7 +252,7 @@ func _build_hud() -> void:
 		c.anchor_bottom = 0.5
 		_hud.add_child(c)
 
-	# Top row
+	# Top bar — money, wanted, waypoint, clock.
 	var top := HBoxContainer.new()
 	top.add_theme_constant_override("separation", 8)
 	top.set_anchors_preset(Control.PRESET_TOP_WIDE)
@@ -158,9 +262,16 @@ func _build_hud() -> void:
 	_hud.add_child(top)
 	_money = _label("$0", 24, MONEY)
 	top.add_child(_panel(_money))
-	_stars = _label("WANTED: -----", 18, GOLD)
-	top.add_child(_panel(_stars))
-	_waypoint = _label("AIRPORT - west", 17, ACCENT)
+	var wanted_box := HBoxContainer.new()
+	wanted_box.add_theme_constant_override("separation", 9)
+	var wlbl := _label("WANTED", 15, GOLD)
+	wlbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	wanted_box.add_child(wlbl)
+	_stars = Stars.new()
+	_stars.custom_minimum_size = Vector2(132, 26)
+	wanted_box.add_child(_stars)
+	top.add_child(_panel(wanted_box))
+	_waypoint = _label("AIRPORT", 17, ACCENT)
 	var wp_panel := _panel(_waypoint)
 	wp_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_waypoint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -168,29 +279,44 @@ func _build_hud() -> void:
 	_clock = _label("12:00", 20, ACCENT)
 	top.add_child(_panel(_clock))
 
-	# Bottom row
-	var bottom := HBoxContainer.new()
-	bottom.add_theme_constant_override("separation", 8)
-	bottom.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	bottom.offset_left = 16
-	bottom.offset_bottom = -16
-	bottom.offset_top = -64
-	_hud.add_child(bottom)
-	bottom.add_child(_panel(_make_bar("HP", true)))
-	bottom.add_child(_panel(_make_bar("ARM", false)))
+	# Left status column — HP, armour, weapon, speed — under the top bar.
+	var status := VBoxContainer.new()
+	status.add_theme_constant_override("separation", 6)
+	var left := _panel(status)
+	left.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	left.offset_left = 16
+	left.offset_top = 68
+	_hud.add_child(left)
+	status.add_child(_make_bar("HEALTH", true))
+	status.add_child(_make_bar("ARMOUR", false))
+	var wsrow := HBoxContainer.new()
+	wsrow.add_theme_constant_override("separation", 22)
+	status.add_child(wsrow)
 	var wbox := VBoxContainer.new()
-	wbox.add_child(_label("WEAPON", 11, Color(0.55, 0.57, 0.6)))
+	wbox.add_child(_label("WEAPON", 11, FAINT))
 	_weapon_name = _label("PISTOL", 16, GOLD)
 	wbox.add_child(_weapon_name)
-	_ammo = _label("inf", 14, TEXT)
+	_ammo = _label("inf", 13, TEXT)
 	wbox.add_child(_ammo)
-	bottom.add_child(_panel(wbox))
+	wsrow.add_child(wbox)
 	var sbox := VBoxContainer.new()
-	_speed_label = _label("SPD", 11, Color(0.55, 0.57, 0.6))
+	_speed_label = _label("SPD", 11, FAINT)
 	sbox.add_child(_speed_label)
 	_speed_val = _label("0", 22, ACCENT)
 	sbox.add_child(_speed_val)
-	bottom.add_child(_panel(sbox))
+	wsrow.add_child(sbox)
+
+	# Minimap — bottom-right corner.
+	_minimap = Minimap.new()
+	_minimap.custom_minimum_size = Vector2(228, 228)
+	_minimap.clip_contents = true
+	var map_panel := _panel(_minimap)
+	map_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	map_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	map_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	map_panel.offset_right = -16
+	map_panel.offset_bottom = -16
+	_hud.add_child(map_panel)
 
 	# Objective ticker
 	_objective = _label("", 17, TEXT)
@@ -210,9 +336,9 @@ func _build_hud() -> void:
 
 func _make_bar(bar_name: String, is_hp: bool) -> VBoxContainer:
 	var box := VBoxContainer.new()
-	box.add_child(_label(bar_name, 11, Color(0.55, 0.57, 0.6)))
+	box.add_child(_label(bar_name, 11, FAINT))
 	var bar := ProgressBar.new()
-	bar.custom_minimum_size = Vector2(150, 12)
+	bar.custom_minimum_size = Vector2(190, 13)
 	bar.show_percentage = false
 	bar.max_value = 100.0
 	bar.value = 100.0
@@ -224,11 +350,11 @@ func _make_bar(bar_name: String, is_hp: bool) -> VBoxContainer:
 	fg.set_corner_radius_all(2)
 	bar.add_theme_stylebox_override("background", bg)
 	bar.add_theme_stylebox_override("fill", fg)
-	box.add_child(bar)
 	if is_hp:
 		_hp = bar
 	else:
 		_arm = bar
+	box.add_child(bar)
 	return box
 
 # ---------------- Death screen ----------------
@@ -285,9 +411,8 @@ func _process(delta: float) -> void:
 			panel.modulate.a = 0.0
 
 func update_hud(data: Dictionary) -> void:
-	_money.text = "$%d" % data.money
-	var n: int = clampi(int(round(data.wanted)), 0, 5)
-	_stars.text = "WANTED: " + "*".repeat(n) + "-".repeat(5 - n)
+	_money.text = "$" + _commas(int(data.money))
+	_stars.set_level(clampi(int(round(data.wanted)), 0, 5))
 	var mins := int(data.time_min)
 	_clock.text = "%02d:%02d" % [int(mins / 60.0) % 24, mins % 60]
 	_hp.value = clampf(data.hp / data.hp_max * 100.0, 0.0, 100.0)
@@ -297,3 +422,17 @@ func update_hud(data: Dictionary) -> void:
 	_speed_label.text = data.speed_label
 	_speed_val.text = str(int(data.speed_val))
 	_waypoint.text = data.waypoint
+	_minimap.set_player(data.map_x, data.map_z, data.map_yaw)
+
+## Group digits with thousands separators: 70991741333 -> "70,991,741,333".
+func _commas(value: int) -> String:
+	var neg := value < 0
+	var digits := str(absi(value))
+	var out := ""
+	var c := 0
+	for i in range(digits.length() - 1, -1, -1):
+		out = digits[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return ("-" + out) if neg else out

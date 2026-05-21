@@ -3,12 +3,12 @@ extends Node3D
 ## Procedural Vice Beach city — grid roads, buildings, beach, ocean, airport.
 ## Mirrors buildCity()/buildAirport()/collidesAt() from the Three.js prototype.
 
-const BLOCK := 24.0
+const BLOCK := 32.0                  # wide blocks so the streets are roomy
 const GRID := 11
-const ROAD_W := 8.0
-const WORLD := BLOCK * GRID          # 264 — the dense city core
-const WORLD_HALF := WORLD / 2.0      # 132
-const OUTER_HALF := WORLD_HALF + 210.0   # playable wilderness reaches well past the city
+const ROAD_W := 15.0                 # broad multi-lane roads
+const WORLD := BLOCK * GRID          # 352 — the dense city core
+const WORLD_HALF := WORLD / 2.0      # 176
+const OUTER_HALF := WORLD_HALF + 250.0   # wide green wilderness ring around the city
 
 # Airport airfield, off the city grid in the south-east — a long grass field.
 const AIRPORT := {"x": 47.0, "z": 81.0}                              # waypoint = terminal forecourt
@@ -17,6 +17,8 @@ const RUNWAY_B := {"x": 128.0, "z": 350.0, "len": 540.0, "w": 10.0}  # secondary
 # Flat grass airfield the runways sit on — solid ground, no water to crash into.
 const AIRFIELD := {"x0": 30.0, "x1": 180.0, "z0": 0.0, "z1": 820.0}
 const HELIPAD := {"x": 152.0, "z": 92.0}                             # helicopter pad
+# Stock-exchange kiosk in the dead-centre downtown block — walk up and press E.
+const EXCHANGE := {"x": 0.0, "z": -6.0}
 
 ## True inside the grass airfield rectangle (runways + overrun + taxiways).
 func on_airfield(x: float, z: float) -> bool:
@@ -30,7 +32,7 @@ const DOWNTOWN_PALETTE := [0x3d4e63, 0x46586c, 0x33414f, 0x556375, 0x2f3d4c]
 const VILLA_PALETTE := [0xd8cdb0, 0xc99878, 0xe3dcc8, 0xb8a888, 0xcdb89a, 0xa8b0a0]
 const ROOF_PALETTE := [0x7a3b2e, 0x4a4a52, 0x6a4434, 0x8a4a38]
 const PARK_BLOCKS := [Vector2i(5, 4), Vector2i(4, 8), Vector2i(3, 6)]
-const RIVER_CX := -72.0              # the city river runs north-south here
+const RIVER_CX := -64.0              # the city river runs north-south here (block 3 centre)
 
 var buildings: Array = []            # collision AABBs {x,z,w,d,h}
 var lamp_mats: Array[StandardMaterial3D] = []
@@ -143,6 +145,9 @@ func _build_city() -> void:
 				continue                                 # beach kept clear
 			if _in_airport_zone(cx, cz):
 				continue                                 # airport island
+			if bx == 5 and bz == 5:
+				_build_exchange(cx, cz)                  # the stock exchange
+				continue
 			match _district_of(cx, cz, bx, bz):
 				"river":
 					pass
@@ -187,9 +192,9 @@ func _district_of(cx: float, cz: float, bx: int, bz: int) -> String:
 		if p.x == bx and p.y == bz:
 			return "park"
 	var d := sqrt(cx * cx + cz * cz)
-	if d < 44.0:
+	if d < 60.0:
 		return "downtown"
-	if d < 92.0:
+	if d < 122.0:
 		return "commercial"
 	return "residential"
 
@@ -216,6 +221,80 @@ func _build_towers(cx: float, cz: float, downtown: bool) -> void:
 		var px := cx + (randf() - 0.5) * (usable - w)
 		var pz := cz + (randf() - 0.5) * (usable - d)
 		_add_building(px, pz, w, d, h, col)
+
+
+## The stock exchange — a glassy tower, a paved plaza, and a trading kiosk the
+## player walks up to. The kiosk itself isn't a collider, so you can step right
+## onto it; the tower behind it is solid.
+func _build_exchange(cx: float, cz: float) -> void:
+	var plaza_sz := BLOCK - ROAD_W
+	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0x6d6e75), 0.9))
+	plaza.position = Vector3(cx, 0.07, cz)
+	add_child(plaza)
+	var trim := Build.emissive(Build.hex(0x143028), Build.hex(0x3fd6a0), 1.0)
+	for edge in [-1.0, 1.0]:
+		var strip := Build.box(plaza_sz, 0.16, 0.5, trim)
+		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
+		add_child(strip)
+
+	# The exchange tower, set toward the back of the block.
+	var tw := 15.0
+	var td := 9.0
+	var th := 66.0
+	var tz := cz + 3.0
+	var tower := Build.box(tw, th, td, Build.mat(Build.hex(0x2c3a4c), 0.3, 0.35))
+	tower.position = Vector3(cx, th / 2.0 + 0.14, tz)
+	add_child(tower)
+	buildings.append({"x": cx, "z": tz, "w": tw, "d": td, "h": th})
+	var band := Build.emissive(Build.hex(0x14242f), Build.hex(0x3fd6a0), 1.6)
+	for by in [13.0, 28.0, 43.0, 58.0]:
+		var stripe := Build.box(tw + 0.3, 1.0, td + 0.3, band)
+		stripe.position = Vector3(cx, by, tz)
+		add_child(stripe)
+	var sign_panel := Build.emissive(Build.hex(0x0d1b16), Build.hex(0x4fe6b0), 2.4)
+	var sign := Build.box(12.0, 3.6, 0.4, sign_panel)
+	sign.position = Vector3(cx, th - 7.0, tz - td / 2.0 - 0.25)
+	add_child(sign)
+	var sign_text := Label3D.new()
+	sign_text.text = "VICE BEACH\nEXCHANGE"
+	sign_text.font_size = 84
+	sign_text.pixel_size = 0.012
+	sign_text.modulate = Color("06140f")
+	sign_text.outline_size = 0
+	sign_text.position = Vector3(cx, th - 7.0, tz - td / 2.0 - 0.46)
+	add_child(sign_text)
+
+	_build_terminal_kiosk(EXCHANGE.x, EXCHANGE.z)
+
+
+## A free-standing computer terminal — pedestal, angled glowing monitor, and a
+## floating billboard prompt. This is the EXCHANGE interaction point.
+func _build_terminal_kiosk(x: float, z: float) -> void:
+	var dark := Build.mat(Build.hex(0x1c1f26), 0.5, 0.35)
+	var base := Build.cyl(1.0, 1.2, 0.3, 16, dark)
+	base.position = Vector3(x, 0.15, z)
+	add_child(base)
+	var pedestal := Build.box(1.3, 1.1, 0.8, dark)
+	pedestal.position = Vector3(x, 0.85, z)
+	add_child(pedestal)
+	var screen_m := Build.emissive(Build.hex(0x0a1f1a), Build.hex(0x46e6a4), 2.8)
+	var housing := Build.box(1.62, 1.14, 0.16, dark)
+	housing.position = Vector3(x, 1.7, z - 0.04)
+	housing.rotation.x = -0.32
+	add_child(housing)
+	var screen := Build.box(1.46, 0.98, 0.1, screen_m)
+	screen.position = Vector3(x, 1.7, z + 0.02)
+	screen.rotation.x = -0.32
+	add_child(screen)
+	var prompt := Label3D.new()
+	prompt.text = "STOCKS  ·  PRESS E"
+	prompt.font_size = 56
+	prompt.pixel_size = 0.006
+	prompt.modulate = Color("9ff0cf")
+	prompt.outline_modulate = Color(0, 0, 0, 0.8)
+	prompt.position = Vector3(x, 2.7, z)
+	prompt.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(prompt)
 
 
 ## A residential villa — house, pitched roof, garage, pool, lawn and fence.
@@ -306,7 +385,10 @@ func _build_park(cx: float, cz: float) -> void:
 
 ## The city river plus the bridges that carry the cross-streets over it.
 func _build_river() -> void:
-	var river := Build.plane(22.0, WORLD, Build.mat(Build.hex(0x356d8a), 0.3, 0.3))
+	# The river is narrower than the gap between its two banking roads, so it
+	# never floods onto the streets.
+	var river_w := BLOCK - ROAD_W - 3.0
+	var river := Build.plane(river_w, WORLD, Build.mat(Build.hex(0x356d8a), 0.3, 0.3))
 	river.position = Vector3(RIVER_CX, 0.06, 0.0)
 	add_child(river)
 	var deck_m := Build.mat(Build.hex(0x3a3a42), 0.85)
@@ -314,14 +396,15 @@ func _build_river() -> void:
 	var pylon_m := Build.mat(Build.hex(0x6a6a72), 0.8)
 	for i in range(GRID + 1):
 		var z := -WORLD_HALF + i * BLOCK
-		var deck := Build.box(26.0, 0.4, ROAD_W + 1.0, deck_m)
+		# Each bridge deck spans the full block, joining the roads on both banks.
+		var deck := Build.box(BLOCK, 0.4, ROAD_W + 2.0, deck_m)
 		deck.position = Vector3(RIVER_CX, 0.5, z)
 		add_child(deck)
-		for rz in [-(ROAD_W / 2.0 + 0.3), ROAD_W / 2.0 + 0.3]:
-			var rail := Build.box(26.0, 1.0, 0.4, rail_m)
+		for rz in [-(ROAD_W / 2.0 + 0.8), ROAD_W / 2.0 + 0.8]:
+			var rail := Build.box(BLOCK, 1.0, 0.4, rail_m)
 			rail.position = Vector3(RIVER_CX, 1.1, z + rz)
 			add_child(rail)
-		for px in [RIVER_CX - 8.0, RIVER_CX + 8.0]:
+		for px in [RIVER_CX - river_w / 2.0, RIVER_CX + river_w / 2.0]:
 			var pylon := Build.cyl(0.7, 0.9, 3.0, 8, pylon_m)
 			pylon.position = Vector3(px, 0.0, z)
 			add_child(pylon)
@@ -567,13 +650,15 @@ func _add_mountains() -> void:
 	var snow_m := Build.mat(Build.hex(0xd8dde2), 0.9)
 	for i in 72:
 		var ang := randf() * TAU
-		var dist := WORLD_HALF + 40.0 + randf() * 380.0
+		var h := 60.0 + randf() * 175.0
+		var r := 55.0 + randf() * 95.0
+		# Offset the distance by the mountain's own radius so its base never
+		# reaches into the city core — the near edge sits >=30 m past the city.
+		var dist := WORLD_HALF + r + 30.0 + randf() * 260.0
 		var x := cos(ang) * dist
 		var z := sin(ang) * dist
 		if z > WORLD_HALF + 20.0:        # keep the southern sea clear
 			continue
-		var h := 60.0 + randf() * 175.0
-		var r := 55.0 + randf() * 95.0
 		# Keep the grass airfield clear — no mountain may intrude on it.
 		var ax := clampf(x, AIRFIELD.x0, AIRFIELD.x1)
 		var az := clampf(z, AIRFIELD.z0, AIRFIELD.z1)
