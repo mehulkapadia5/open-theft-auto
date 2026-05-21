@@ -75,6 +75,38 @@ func nearest_dock(pos: Vector3) -> Vector3:
 			best = d.board
 	return best
 
+## Height of an elevated bridge deck for a given distance from the river centre
+## — flat over the channel, ramping down to road level on each bank.
+func _bridge_profile(x: float) -> float:
+	var d := absf(x - RIVER_CX)
+	if d >= 26.0:
+		return 0.0
+	if d <= 10.0:
+		return BRIDGE_H
+	return BRIDGE_H * (26.0 - d) / 16.0
+
+## Height of the walkable surface at a point — 0 on flat ground, raised on the
+## elevated river bridges and the dock jetties. Cars and the player ride this.
+func surface_height(x: float, z: float) -> float:
+	var h := 0.0
+	# While the office is occupied, lift the player onto its floor — it sits
+	# high over the bay, far from any normal walkable ground.
+	if trading_floor_active:
+		var tf := TRADING_FLOOR
+		if absf(x - tf.x) < 11.5 and absf(z - tf.z) < 8.5:
+			return tf.y
+	if absf(x - RIVER_CX) < 26.0:
+		for i in range(GRID + 1):
+			var gz: float = -WORLD_HALF + i * BLOCK
+			if absf(z - gz) < (ROAD_W + 2.0) / 2.0:
+				h = maxf(h, _bridge_profile(x))
+				break
+	for d in _dock_rects:
+		if x > d.x - d.w / 2.0 and x < d.x + d.w / 2.0 \
+			and z > d.z - d.d / 2.0 and z < d.z + d.d / 2.0:
+			h = maxf(h, 0.55)
+	return h
+
 # Realistic city palette — concrete, stucco, slate, sandstone, weathered brick.
 const PALETTE := [0x8a8a82, 0x9a8f7a, 0x6e7479, 0x7a6a58, 0x5f6b66, 0xa7a098, 0x55606b, 0x8a7256]
 # Glassy blue-grey towers for the downtown core.
@@ -85,6 +117,7 @@ const ROOF_PALETTE := [0x7a3b2e, 0x4a4a52, 0x6a4434, 0x8a4a38]
 const PARK_BLOCKS := [Vector2i(5, 4), Vector2i(4, 8), Vector2i(3, 6)]
 const RIVER_CX := -64.0              # the city river runs north-south here (block 3 centre)
 const RIVER_HALF := 8.0              # half-width of the navigable river channel
+const BRIDGE_H := 4.2                # deck height of the elevated river bridges
 # The President's estate — a large gated compound on its own island in the bay,
 # just west of the airport and reached by a short causeway off the airport.
 const ESTATE_GROUNDS := {"x0": -135.0, "x1": 18.0, "z0": 252.0, "z1": 470.0}
@@ -95,10 +128,19 @@ const LAUNCH := {"x": 210.0, "z": -250.0}
 # The Moon — a grey surface built high above the world; the rocket flies up to it.
 const MOON_Y := 4000.0
 const MOON_PAD := {"x": 0.0, "z": 0.0}
+# The exchange trading floor — an enterable glass penthouse crowning the stock
+# exchange tower (block 5,5: tower centred at x0, z3, roof at y66). Reached by
+# teleport from the kiosk; floor and walls only affect the player while occupied.
+const TRADING_FLOOR := {"x": 0.0, "z": 3.0, "y": 66.4}
+const OFFICE_EXIT := {"x": 0.0, "z": -0.5}    # exit pad, and the arrival point
+const OFFICE_DESK := {"x": 0.0, "z": 8.0}     # standing spot in front of the desk
 
 var buildings: Array = []            # collision AABBs {x,z,w,d,h}
 var docks: Array = []                # {board: Vector3 water-end, dir: Vector2}
 var _dock_rects: Array = []          # walkable pier footprints {x,z,w,d}
+var trading_floor_active := false    # true only while the player is in the office
+var _office_root: Node3D             # parent of all trading-floor geometry
+var _office_walls: Array = []        # interior collision rects {x,z,w,d}
 var track: Track                     # the F1 circuit looping the wilderness
 var lamp_mats: Array[StandardMaterial3D] = []
 var window_mat: StandardMaterial3D
@@ -128,6 +170,7 @@ func generate() -> void:
 	_build_docks()
 	_build_launch_base()
 	_build_moon()
+	_build_trading_floor()
 	track = Track.new()
 	add_child(track)
 	track.build()
@@ -248,6 +291,81 @@ func _build_moon() -> void:
 	flag.position = Vector3(mx + 8.0, my + 5.0, mz + 7.4)
 	add_child(flag)
 
+	_build_moon_base(mx, mz - 60.0, my)
+	# A loop of glowing gates — the low-gravity buggy course.
+	var gate_m := Build.emissive(Build.hex(0x14303a), Color("4fd6ff"), 2.4)
+	for gi in 9:
+		var ga := gi * TAU / 9.0
+		var gd := 150.0 + sin(gi * 1.7) * 40.0
+		var gx := mx + cos(ga) * gd
+		var gz := mz + sin(ga) * gd
+		for gpost in [-4.0, 4.0]:
+			var post := Build.box(0.7, 7.0, 0.7, gate_m)
+			post.position = Vector3(gx + cos(ga + PI / 2.0) * gpost, my + 3.5,
+				gz + sin(ga + PI / 2.0) * gpost)
+			add_child(post)
+		var bar := Build.box(9.0, 0.7, 0.7, gate_m)
+		bar.position = Vector3(gx, my + 7.0, gz)
+		bar.rotation.y = ga + PI / 2.0
+		add_child(bar)
+
+
+## A lunar outpost — habitat domes, modules, solar arrays and a comms dish.
+func _build_moon_base(bx: float, bz: float, by: float) -> void:
+	var white := Build.mat(Build.hex(0xe4e6ea), 0.6)
+	var dark := Build.mat(Build.hex(0x2a2d33), 0.6)
+	var glass := Build.mat(Build.hex(0x9fd6e6), 0.15, 0.4)
+	var solar := Build.emissive(Build.hex(0x16243f), Color("3a6fb0"), 0.5)
+
+	# Two habitat domes.
+	for dome_dx in [-14.0, 14.0]:
+		var base_cyl := Build.cyl(7.0, 7.0, 3.4, 20, white)
+		base_cyl.position = Vector3(bx + dome_dx, by + 1.7, bz)
+		add_child(base_cyl)
+		var dome := Build.sphere(7.0, glass)
+		dome.position = Vector3(bx + dome_dx, by + 3.4, bz)
+		add_child(dome)
+	# Connecting module + airlock.
+	var tube := Build.cyl(1.6, 1.6, 18.0, 12, white)
+	tube.rotation.z = PI / 2.0
+	tube.position = Vector3(bx, by + 1.8, bz)
+	add_child(tube)
+	var hub := Build.box(6.0, 4.0, 6.0, white)
+	hub.position = Vector3(bx, by + 2.0, bz - 11.0)
+	add_child(hub)
+	var hub_door := Build.emissive(Build.hex(0x2a2418), Color("ffd98a"), 1.4)
+	var door := Build.box(2.0, 3.0, 0.3, hub_door)
+	door.position = Vector3(bx, by + 1.5, bz - 14.05)
+	add_child(door)
+	# Solar arrays.
+	for sa in [-1.0, 1.0]:
+		for col in 3:
+			var panel := Build.box(5.0, 0.2, 3.4, solar)
+			panel.position = Vector3(bx + sa * 26.0, by + 3.0, bz - 8.0 + col * 4.2)
+			panel.rotation.x = -0.5
+			add_child(panel)
+		var mast := Build.cyl(0.3, 0.3, 6.0, 6, dark)
+		mast.position = Vector3(bx + sa * 26.0, by + 3.0, bz)
+		add_child(mast)
+	# Comms dish.
+	var dish_mast := Build.cyl(0.4, 0.5, 9.0, 8, dark)
+	dish_mast.position = Vector3(bx, by + 4.5, bz + 12.0)
+	add_child(dish_mast)
+	var dish := Build.cyl(0.3, 3.6, 1.6, 14, white)
+	dish.rotation.x = -1.0
+	dish.position = Vector3(bx, by + 9.5, bz + 12.0)
+	add_child(dish)
+	var sign := Label3D.new()
+	sign.text = "VICE  MOON  BASE"
+	sign.font_size = 100
+	sign.pixel_size = 0.02
+	sign.modulate = Color("cfe8ff")
+	sign.outline_modulate = Color(0, 0, 0, 0.85)
+	sign.position = Vector3(bx, by + 9.0, bz)
+	sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(sign)
+
+
 func _add_road_strip(x: float, z: float, w: float, d: float) -> void:
 	var sw := Build.box(w + 3.0, 0.04, d + 3.0, _sidewalk_mat)
 	sw.position = Vector3(x, 0.02, z)
@@ -297,10 +415,19 @@ func _add_building(x: float, z: float, w: float, d: float, h: float, color: int)
 	buildings.append({"x": x, "z": z, "w": w, "d": d, "h": h})
 
 func _build_city() -> void:
+	# North-south roads run the full length (none lie on the river).
 	for i in range(GRID + 1):
 		_add_road_strip(-WORLD_HALF + i * BLOCK, 0.0, ROAD_W, WORLD)
+	# East-west cross-streets are gapped over the river — the elevated bridge
+	# carries the road across, leaving open water beneath it for boats.
+	var gap_l := RIVER_CX - 26.0
+	var gap_r := RIVER_CX + 26.0
 	for i in range(GRID + 1):
-		_add_road_strip(0.0, -WORLD_HALF + i * BLOCK, WORLD, ROAD_W)
+		var rz := -WORLD_HALF + i * BLOCK
+		var left_w := gap_l + WORLD_HALF
+		_add_road_strip(-WORLD_HALF + left_w / 2.0, rz, left_w, ROAD_W)
+		var right_w := WORLD_HALF - gap_r
+		_add_road_strip(gap_r + right_w / 2.0, rz, right_w, ROAD_W)
 
 	_build_river()
 
@@ -489,6 +616,164 @@ func _build_terminal_kiosk(x: float, z: float, prompt_text := "STOCKS  ·  PRESS
 	add_child(prompt)
 
 
+## Shows or hides the trading-floor office and arms its floor + wall collision.
+func set_trading_floor(active: bool) -> void:
+	trading_floor_active = active
+	if _office_root != null:
+		_office_root.visible = active
+
+
+## A glass penthouse crowning the stock exchange tower. The player teleports up
+## from the exchange kiosk into a skyline lounge, walks through a glass partition
+## into the trading room, and trades at a wall of live monitors. Hidden until
+## entered — see set_trading_floor.
+func _build_trading_floor() -> void:
+	var ox: float = TRADING_FLOOR.x
+	var oz: float = TRADING_FLOOR.z
+	var oy: float = TRADING_FLOOR.y
+	var hw := 11.0           # half-width  (x)
+	var hd := 8.0            # half-depth  (z)
+	var ceil_h := 3.8        # floor-to-ceiling height
+
+	_office_root = Node3D.new()
+	_office_root.visible = false
+	add_child(_office_root)
+
+	var glass := Build.mat(Build.hex(0xbfe6ec), 0.04, 0.2)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.albedo_color.a = 0.18
+	var frame := Build.mat(Build.hex(0x10141c), 0.35, 0.85)
+	var floor_mat := Build.mat(Build.hex(0x1b2026), 0.18, 0.5)
+	var desk_mat := Build.mat(Build.hex(0x14181e), 0.3, 0.4)
+
+	# Floor slab (overhangs the tower as a cantilevered crown), carpet, ceiling.
+	var slab := Build.box(hw * 2.0 + 1.2, 0.6, hd * 2.0 + 1.2, frame)
+	slab.position = Vector3(ox, oy - 0.42, oz)
+	_office_root.add_child(slab)
+	var deck := Build.box(hw * 2.0, 0.12, hd * 2.0, floor_mat)
+	deck.position = Vector3(ox, oy - 0.06, oz)
+	_office_root.add_child(deck)
+	var rug := Build.emissive(Build.hex(0x10242b), Build.hex(0x2f6f6a), 0.5)
+	var carpet := Build.box(hw * 2.0 - 3.0, 0.06, hd * 2.0 - 3.0, rug)
+	carpet.position = Vector3(ox, oy + 0.03, oz)
+	_office_root.add_child(carpet)
+	var ceiling := Build.box(hw * 2.0 + 1.0, 0.4, hd * 2.0 + 1.0, frame)
+	ceiling.position = Vector3(ox, oy + ceil_h + 0.2, oz)
+	_office_root.add_child(ceiling)
+	var panel := Build.emissive(Build.hex(0xeaf6ff), Build.hex(0xeaf6ff), 1.6)
+	for cl in [-5.0, -1.7, 1.7, 5.0]:
+		var strip := Build.box(hw * 2.0 - 3.0, 0.12, 0.8, panel)
+		strip.position = Vector3(ox, oy + ceil_h - 0.1, oz + cl)
+		_office_root.add_child(strip)
+
+	# Perimeter glass curtain wall — front faces the city skyline.
+	var wall_specs := [
+		{"x": ox,      "z": oz - hd, "w": hw * 2.0, "d": 0.3},
+		{"x": ox,      "z": oz + hd, "w": hw * 2.0, "d": 0.3},
+		{"x": ox - hw, "z": oz,      "w": 0.3,      "d": hd * 2.0},
+		{"x": ox + hw, "z": oz,      "w": 0.3,      "d": hd * 2.0},
+	]
+	for ws in wall_specs:
+		var pane := Build.box(ws.w, ceil_h - 0.5, ws.d, glass)
+		pane.position = Vector3(ws.x, oy + (ceil_h - 0.5) / 2.0 + 0.25, ws.z)
+		_office_root.add_child(pane)
+		var sill := Build.box(ws.w, 0.25, ws.d + 0.15, frame)
+		sill.position = Vector3(ws.x, oy + 0.12, ws.z)
+		_office_root.add_child(sill)
+		var head := Build.box(ws.w, 0.22, ws.d + 0.15, frame)
+		head.position = Vector3(ws.x, oy + ceil_h - 0.1, ws.z)
+		_office_root.add_child(head)
+		_office_walls.append(ws)
+	# Vertical mullions break up the skyline-facing wall.
+	for mx in [-7.5, -3.5, 3.5, 7.5]:
+		var mull := Build.box(0.2, ceil_h - 0.4, 0.4, frame)
+		mull.position = Vector3(ox + mx, oy + (ceil_h - 0.4) / 2.0 + 0.2, oz - hd)
+		_office_root.add_child(mull)
+
+	# Glass partition splitting the lounge (front) from the trading room (back),
+	# leaving a 4-wide doorway at the centre.
+	var pz := oz + 1.5
+	for seg in [-6.5, 6.5]:
+		var part := Build.box(9.0, ceil_h - 0.5, 0.25, glass)
+		part.position = Vector3(ox + seg, oy + (ceil_h - 0.5) / 2.0 + 0.25, pz)
+		_office_root.add_child(part)
+		var pframe := Build.box(9.0, 0.2, 0.4, frame)
+		pframe.position = Vector3(ox + seg, oy + ceil_h - 0.15, pz)
+		_office_root.add_child(pframe)
+		_office_walls.append({"x": ox + seg, "z": pz, "w": 9.0, "d": 0.25})
+	for dx in [-2.0, 2.0]:
+		var jamb := Build.box(0.3, ceil_h - 0.4, 0.5, frame)
+		jamb.position = Vector3(ox + dx, oy + (ceil_h - 0.4) / 2.0 + 0.2, pz)
+		_office_root.add_child(jamb)
+
+	# Trading desk against the back wall, topped with an emissive ledge.
+	var desk_z := oz + hd - 1.5
+	var desk := Build.box(17.5, 1.0, 1.3, desk_mat)
+	desk.position = Vector3(ox, oy + 0.6, desk_z)
+	_office_root.add_child(desk)
+	var ledge := Build.emissive(Build.hex(0x1c2730), Build.hex(0x39c0a8), 0.6)
+	var top := Build.box(17.9, 0.12, 1.6, ledge)
+	top.position = Vector3(ox, oy + 1.12, desk_z)
+	_office_root.add_child(top)
+
+	# A wall of glowing monitors above the desk — two stacked rows.
+	var mon_colors := [0x39e0a0, 0x39e0a0, 0xe0b13a, 0x39e0a0,
+		0xe05a4a, 0x39e0a0, 0x4aa8e0, 0xe0b13a]
+	var ci := 0
+	for row in [2.05, 3.0]:
+		for col in range(-6, 7, 2):
+			var glow: int = mon_colors[ci % mon_colors.size()]
+			ci += 1
+			var bezel := Build.box(1.9, 0.86, 0.12, frame)
+			bezel.position = Vector3(ox + col, oy + row, oz + hd - 0.3)
+			_office_root.add_child(bezel)
+			var scr := Build.emissive(Build.hex(0x081016), Build.hex(glow), 2.6)
+			var screen := Build.box(1.68, 0.7, 0.08, scr)
+			screen.position = Vector3(ox + col, oy + row, oz + hd - 0.22)
+			_office_root.add_child(screen)
+
+	# Lounge benches by the skyline window.
+	for bx in [-6.0, 6.0]:
+		var bench := Build.box(3.0, 0.5, 1.1, desk_mat)
+		bench.position = Vector3(ox + bx, oy + 0.31, oz - hd + 2.2)
+		_office_root.add_child(bench)
+
+	# Exit pad in the lounge — step on, press E to drop back to the street.
+	var pad_mat := Build.emissive(Build.hex(0x0c2a22), Build.hex(0x46e6a4), 2.4)
+	var pad := Build.cyl(1.5, 1.5, 0.12, 24, pad_mat)
+	pad.position = Vector3(OFFICE_EXIT.x, oy + 0.08, OFFICE_EXIT.z)
+	_office_root.add_child(pad)
+	_office_root.add_child(_office_label("EXIT TO STREET  ·  PRESS E",
+		Vector3(OFFICE_EXIT.x, oy + 1.7, OFFICE_EXIT.z), Color("9ff0cf")))
+
+	# Trade prompt floating in front of the monitor desk.
+	_office_root.add_child(_office_label("TRADE STOCKS  ·  PRESS E",
+		Vector3(OFFICE_DESK.x, oy + 1.7, OFFICE_DESK.z), Color("9ff0cf")))
+
+	# Branding on the inside of the skyline wall.
+	var title := Label3D.new()
+	title.text = "VICE BEACH EXCHANGE"
+	title.font_size = 64
+	title.pixel_size = 0.008
+	title.modulate = Color("cdeee2")
+	title.outline_modulate = Color(0, 0, 0, 0.8)
+	title.position = Vector3(ox, oy + ceil_h - 0.55, oz - hd + 0.35)
+	_office_root.add_child(title)
+
+
+## A floating billboard prompt used inside the trading-floor office.
+func _office_label(text: String, pos: Vector3, color: Color) -> Label3D:
+	var lbl := Label3D.new()
+	lbl.text = text
+	lbl.font_size = 52
+	lbl.pixel_size = 0.006
+	lbl.modulate = color
+	lbl.outline_modulate = Color(0, 0, 0, 0.8)
+	lbl.position = pos
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	return lbl
+
+
 ## The car dealership — a glass-walled showroom with display cars lit up
 ## inside, a forecourt with more cars (one bonnet-up), and the trading kiosk.
 ## The showroom shell is solid; kiosk and display cars are walk-through.
@@ -591,6 +876,64 @@ func _add_display_car(x: float, z: float, color: int, style: String,
 
 ## The Stark lab — a sleek dark tower ringed with arc-reactor blue light, where
 ## the player buys Iron Man suit upgrades. Kiosk out front, tower solid.
+## A static armoured figure for the Stark showroom — posed standing, faces +Z.
+func _build_display_suit(primary: int, secondary: int, dk: int, big: bool) -> Node3D:
+	var g := Node3D.new()
+	var pm := Build.mat(Build.hex(primary), 0.35, 0.55)
+	var sm := Build.mat(Build.hex(secondary), 0.3, 0.7)
+	var dm := Build.mat(Build.hex(dk), 0.5, 0.5)
+	var glow := Build.emissive(Build.hex(0x9fe9ff), Build.hex(0x9fe9ff), 4.0)
+	var eyeglow := Build.emissive(Build.hex(0xeaffff), Build.hex(0xd6f4ff), 4.0)
+	for lx in [-0.22, 0.22]:
+		var thigh := Build.box(0.32, 0.52, 0.34, pm)
+		thigh.position = Vector3(lx, 0.74, 0)
+		g.add_child(thigh)
+		var shin := Build.box(0.3, 0.5, 0.32, sm)
+		shin.position = Vector3(lx, 0.26, 0)
+		g.add_child(shin)
+		var boot := Build.box(0.32, 0.16, 0.48, pm)
+		boot.position = Vector3(lx, 0.08, 0.07)
+		g.add_child(boot)
+	var pelvis := Build.box(0.56, 0.26, 0.36, dm)
+	pelvis.position.y = 1.06
+	g.add_child(pelvis)
+	var torso := Build.box(0.74, 0.78, 0.44, pm)
+	torso.position.y = 1.46
+	g.add_child(torso)
+	var abdomen := Build.box(0.58, 0.28, 0.4, sm)
+	abdomen.position.y = 1.12
+	g.add_child(abdomen)
+	var reactor := Build.cyl(0.13, 0.13, 0.1, 14, glow)
+	reactor.rotation.x = PI / 2.0
+	reactor.position = Vector3(0, 1.6, 0.23)
+	g.add_child(reactor)
+	var shoulders := Build.box(1.04, 0.28, 0.48, pm)
+	shoulders.position.y = 1.84
+	g.add_child(shoulders)
+	for ax in [-1.0, 1.0]:
+		var upper := Build.box(0.24, 0.5, 0.24, pm)
+		upper.position = Vector3(ax * 0.62, 1.55, 0)
+		g.add_child(upper)
+		var fore := Build.box(0.22, 0.46, 0.22, sm)
+		fore.position = Vector3(ax * 0.68, 1.08, 0)
+		g.add_child(fore)
+		var hand := Build.box(0.2, 0.16, 0.2, dm)
+		hand.position = Vector3(ax * 0.7, 0.82, 0)
+		g.add_child(hand)
+	var helmet := Build.box(0.4, 0.42, 0.4, pm)
+	helmet.position.y = 2.16
+	g.add_child(helmet)
+	var face := Build.box(0.32, 0.22, 0.08, sm)
+	face.position = Vector3(0, 2.14, 0.21)
+	g.add_child(face)
+	for ex in [-0.085, 0.085]:
+		var eye := Build.box(0.08, 0.045, 0.03, eyeglow)
+		eye.position = Vector3(ex, 2.19, 0.23)
+		g.add_child(eye)
+	if big:
+		g.scale = Vector3(1.55, 1.55, 1.55)
+	return g
+
 func _build_stark_lab(cx: float, cz: float) -> void:
 	var blue := Color("6fd8ff")
 	var plaza_sz := BLOCK - ROAD_W
@@ -603,34 +946,97 @@ func _build_stark_lab(cx: float, cz: float) -> void:
 		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
 		add_child(strip)
 
-	var tw := 13.0
-	var td := 10.0
-	var th := 58.0
-	var tz := cz + 3.0
+	# --- Glass showroom hall toward the back of the block ---
+	var sw := 17.0
+	var sd := 12.0
+	var wall_h := 9.0
+	var sz := cz + 2.0
+	var fz := sz - sd / 2.0                                  # glass front face
+
+	var steel := Build.mat(Build.hex(0x8d949c), 0.4, 0.75)
+	var floor := Build.emissive(Build.hex(0xa9b6c0), Build.hex(0x4a5560), 0.5)
+	var glass := Build.mat(Build.hex(0xbfe6ec), 0.05, 0.25)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.albedo_color.a = 0.32
+
+	var plinth := Build.box(sw, 0.5, sd, Build.mat(Build.hex(0x1c1f25), 0.8))
+	plinth.position = Vector3(cx, 0.25, sz)
+	add_child(plinth)
+	var floor_mi := Build.box(sw - 0.8, 0.1, sd - 0.8, floor)
+	floor_mi.position = Vector3(cx, 0.52, sz)
+	add_child(floor_mi)
+
+	# Showroom shell — solid collision once, drawn with glass walls.
+	buildings.append({"x": cx, "z": sz, "w": sw, "d": sd, "h": wall_h})
+	var back := Build.box(sw, wall_h, 0.4, Build.mat(Build.hex(0x23262d), 0.8))
+	back.position = Vector3(cx, wall_h / 2.0 + 0.5, sz + sd / 2.0)
+	add_child(back)
+	for side in [-1.0, 1.0]:
+		var sidewall := Build.box(0.3, wall_h - 0.4, sd - 0.5, glass)
+		sidewall.position = Vector3(cx + side * sw / 2.0, wall_h / 2.0 + 0.7, sz)
+		add_child(sidewall)
+	var front_glass := Build.box(sw - 0.6, wall_h - 0.4, 0.3, glass)
+	front_glass.position = Vector3(cx, wall_h / 2.0 + 0.7, fz)
+	add_child(front_glass)
+	# Steel posts at the corners and either side of the entrance.
+	for px in [-sw / 2.0, -2.8, 2.8, sw / 2.0]:
+		var post := Build.box(0.5, wall_h, 0.5, steel)
+		post.position = Vector3(cx + px, wall_h / 2.0 + 0.5, fz)
+		add_child(post)
+	# Flat overhanging roof + lit blue ceiling so the suits inside read clearly.
+	var roof := Build.box(sw + 1.8, 0.55, sd + 1.8, Build.mat(Build.hex(0x202329), 0.85))
+	roof.position = Vector3(cx, wall_h + 0.85, sz)
+	add_child(roof)
+	var ceiling := Build.emissive(Build.hex(0xcdeeff), Build.hex(0xa6e3ff), 1.5)
+	for cl in [-1.0, 0.0, 1.0]:
+		var cstrip := Build.box(sw - 2.0, 0.15, 1.5, ceiling)
+		cstrip.position = Vector3(cx, wall_h + 0.3, sz + cl * 3.2)
+		add_child(cstrip)
+
+	# Lit fascia + correctly-facing brand sign above the entrance.
+	var fascia := Build.emissive(Build.hex(0x06141d), blue, 2.6)
+	var fband := Build.box(sw + 1.8, 1.8, 0.3, fascia)
+	fband.position = Vector3(cx, wall_h + 1.95, fz - 0.9)
+	add_child(fband)
+	var sign_text := Label3D.new()
+	sign_text.text = "STARK INDUSTRIES"
+	sign_text.font_size = 96
+	sign_text.pixel_size = 0.011
+	sign_text.modulate = Color("06141d")
+	sign_text.outline_size = 0
+	sign_text.rotation.y = PI                                # face the plaza
+	sign_text.position = Vector3(cx, wall_h + 1.95, fz - 1.06)
+	add_child(sign_text)
+
+	# --- Stark tower rising from the back of the showroom ---
+	var tw := 9.0
+	var td := 5.0
+	var th := 52.0
+	var tz := sz + sd / 2.0 - td / 2.0 - 0.4
 	var tower := Build.box(tw, th, td, Build.mat(Build.hex(0x1d2026), 0.3, 0.6))
-	tower.position = Vector3(cx, th / 2.0 + 0.14, tz)
+	tower.position = Vector3(cx, th / 2.0 + wall_h, tz)
 	add_child(tower)
-	buildings.append({"x": cx, "z": tz, "w": tw, "d": td, "h": th})
+	buildings.append({"x": cx, "z": tz, "w": tw, "d": td, "h": th + wall_h})
 	var band := Build.emissive(Build.hex(0x0c2230), blue, 2.0)
-	for by in [11.0, 24.0, 37.0, 50.0]:
-		var stripe := Build.box(tw + 0.3, 0.8, td + 0.3, band)
+	for by in [18.0, 30.0, 42.0, 53.0]:
+		var stripe := Build.box(tw + 0.3, 0.7, td + 0.3, band)
 		stripe.position = Vector3(cx, by, tz)
 		add_child(stripe)
 	# A glowing arc-reactor disc set into the tower face.
 	var reactor := Build.emissive(Build.hex(0xeafcff), Color("d8f6ff"), 3.4)
-	var disc := Build.cyl(2.4, 2.4, 0.3, 24, reactor)
+	var disc := Build.cyl(2.0, 2.0, 0.3, 24, reactor)
 	disc.rotation.x = PI / 2.0
-	disc.position = Vector3(cx, 16.0, tz - td / 2.0 - 0.2)
+	disc.position = Vector3(cx, 24.0, tz - td / 2.0 - 0.2)
 	add_child(disc)
-	var sign_text := Label3D.new()
-	sign_text.text = "STARK\nINDUSTRIES"
-	sign_text.font_size = 76
-	sign_text.pixel_size = 0.013
-	sign_text.modulate = Color("d8f6ff")
-	sign_text.outline_modulate = Color(0, 0, 0, 0.8)
-	sign_text.rotation.y = PI                                # face the plaza
-	sign_text.position = Vector3(cx, th - 8.0, tz - td / 2.0 - 0.3)
-	add_child(sign_text)
+	var tower_label := Label3D.new()
+	tower_label.text = "STARK"
+	tower_label.font_size = 64
+	tower_label.pixel_size = 0.013
+	tower_label.modulate = Color("d8f6ff")
+	tower_label.outline_modulate = Color(0, 0, 0, 0.8)
+	tower_label.rotation.y = PI                              # face the plaza
+	tower_label.position = Vector3(cx, th + wall_h - 6.0, tz - td / 2.0 - 0.3)
+	add_child(tower_label)
 
 	# Suit delivery pad — a glowing dais where a bought suit is placed to wear.
 	var pad_dark := Build.mat(Build.hex(0x1a1d24), 0.5, 0.5)
@@ -657,6 +1063,37 @@ func _build_stark_lab(cx: float, cz: float) -> void:
 	pad_label.position = Vector3(STARK_SUIT_PAD.x, 2.6, STARK_SUIT_PAD.z)
 	pad_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(pad_label)
+
+	# --- Showroom — the full suit line-up displayed on lit pedestals. ---
+	var liveries := [
+		{"name": "MARK III", "p": 0xb01a1a, "s": 0xe0ad28, "d": 0x2a2a30, "big": false},
+		{"name": "MARK VI", "p": 0x9c1216, "s": 0xc6cad2, "d": 0x26262c, "big": false},
+		{"name": "WAR MACHINE", "p": 0x52565d, "s": 0x303338, "d": 0x1a1b20, "big": false},
+		{"name": "HULKBUSTER", "p": 0xb83838, "s": 0xd0a840, "d": 0x2a2a30, "big": true},
+	]
+	var sr_z := sz - 1.5                                      # inside the showroom
+	for i in liveries.size():
+		var L: Dictionary = liveries[i]
+		var sx := cx - 6.0 + i * 4.0
+		var ped := Build.cyl(1.4, 1.6, 0.66, 24, Build.mat(Build.hex(0x16181e), 0.5, 0.5))
+		ped.position = Vector3(sx, 0.91, sr_z)              # raised onto showroom floor
+		add_child(ped)
+		var pring := Build.cyl(1.45, 1.45, 0.08, 24, Build.emissive(Build.hex(0x0c2230), blue, 2.6))
+		pring.position = Vector3(sx, 1.27, sr_z)
+		add_child(pring)
+		var disp := _build_display_suit(L.p, L.s, L.d, L.big)
+		disp.position = Vector3(sx, 1.24, sr_z)
+		disp.rotation.y = PI                                  # face the plaza
+		add_child(disp)
+		var slbl := Label3D.new()
+		slbl.text = L.name
+		slbl.font_size = 34
+		slbl.pixel_size = 0.006
+		slbl.modulate = Color("c8f0ff")
+		slbl.outline_modulate = Color(0, 0, 0, 0.8)
+		slbl.position = Vector3(sx, 4.7, sr_z)
+		slbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		add_child(slbl)
 
 	_build_terminal_kiosk(STARK_LAB.x, STARK_LAB.z, "SUITS  ·  PRESS E",
 		blue, Color("c8f0ff"))
@@ -1013,23 +1450,41 @@ func _build_river() -> void:
 	var river := Build.plane(river_w, WORLD, Build.mat(Build.hex(0x2f6f8c), 0.18, 0.35))
 	river.position = Vector3(RIVER_CX, 0.06, 0.0)
 	add_child(river)
+	for i in range(GRID + 1):
+		_build_river_bridge(-WORLD_HALF + i * BLOCK)
+
+
+## One elevated cross-street bridge over the river — a flat span high above the
+## water (boats pass beneath) reached by a ramp down to road level on each bank.
+func _build_river_bridge(gz: float) -> void:
 	var deck_m := Build.mat(Build.hex(0x3a3a42), 0.85)
 	var rail_m := Build.mat(Build.hex(0x9a9aa3), 0.7)
 	var pylon_m := Build.mat(Build.hex(0x6a6a72), 0.8)
-	for i in range(GRID + 1):
-		var z := -WORLD_HALF + i * BLOCK
-		# Each bridge deck spans the full block, joining the roads on both banks.
-		var deck := Build.box(BLOCK, 0.4, ROAD_W + 2.0, deck_m)
-		deck.position = Vector3(RIVER_CX, 0.5, z)
-		add_child(deck)
-		for rz in [-(ROAD_W / 2.0 + 0.8), ROAD_W / 2.0 + 0.8]:
-			var rail := Build.box(BLOCK, 1.0, 0.4, rail_m)
-			rail.position = Vector3(RIVER_CX, 1.1, z + rz)
-			add_child(rail)
-		for px in [RIVER_CX - river_w / 2.0, RIVER_CX + river_w / 2.0]:
-			var pylon := Build.cyl(0.7, 0.9, 3.0, 8, pylon_m)
-			pylon.position = Vector3(px, 0.0, z)
-			add_child(pylon)
+	var dw := ROAD_W + 2.0
+	# Flat span over the channel (matches _bridge_profile: |x-RIVER_CX| <= 10).
+	var span := Build.box(20.0, 0.5, dw, deck_m)
+	span.position = Vector3(RIVER_CX, BRIDGE_H - 0.25, gz)
+	add_child(span)
+	# Approach ramps, 16 m run down to road level on each bank.
+	var run := 16.0
+	var ang := atan2(BRIDGE_H, run)
+	var hyp := sqrt(run * run + BRIDGE_H * BRIDGE_H)
+	for sgn in [-1.0, 1.0]:
+		var ramp := Build.box(hyp, 0.5, dw, deck_m)
+		ramp.position = Vector3(RIVER_CX + sgn * 18.0, BRIDGE_H / 2.0 - 0.22, gz)
+		ramp.rotation.z = -sgn * ang
+		add_child(ramp)
+	# Pillars rising from the water to carry the span.
+	for px in [RIVER_CX - 8.0, RIVER_CX + 8.0]:
+		for pz in [gz - dw / 2.0 + 1.6, gz + dw / 2.0 - 1.6]:
+			var pil := Build.cyl(0.7, 0.9, BRIDGE_H, 8, pylon_m)
+			pil.position = Vector3(px, BRIDGE_H / 2.0, pz)
+			add_child(pil)
+	# Railings along the flat span.
+	for rz in [gz - dw / 2.0 + 0.4, gz + dw / 2.0 - 0.4]:
+		var rail := Build.box(20.0, 1.0, 0.4, rail_m)
+		rail.position = Vector3(RIVER_CX, BRIDGE_H + 0.5, rz)
+		add_child(rail)
 
 func _add_palm(x: float, z: float) -> void:
 	var trunk := Build.cyl(0.3, 0.4, 6.0, 8, Build.mat(Build.hex(0x6b4422), 0.95))
@@ -1165,10 +1620,11 @@ func _add_boat(x: float, z: float, yaw: float, rng: RandomNumberGenerator) -> vo
 func _build_docks() -> void:
 	var plank_m := Build.mat(Build.hex(0x8a6a40), 0.9)
 	var pile_m := Build.mat(Build.hex(0x4f3c22), 0.95)
-	# Each pier runs from a bank end to a water end (the board point).
+	# Each pier runs from a bank end to a water end (the board point). River
+	# docks sit mid-block, clear of the elevated bridges at the grid lines.
 	var piers := [
-		[Vector3(-74, 0, -48), Vector3(-66, 0, -48)],     # river — west bank
-		[Vector3(-54, 0, 40), Vector3(-62, 0, 40)],       # river — east bank
+		[Vector3(-74, 0, -32), Vector3(-66, 0, -32)],     # river — west bank
+		[Vector3(-54, 0, 64), Vector3(-62, 0, 64)],       # river — east bank
 		[Vector3(-74, 0, 124), Vector3(-66, 0, 124)],     # river — west bank
 		[Vector3(-36, 0, 172), Vector3(-36, 0, 192)],     # south beach jetty
 		[Vector3(44, 0, 172), Vector3(44, 0, 192)],       # south beach jetty
@@ -1181,22 +1637,24 @@ func _build_docks() -> void:
 		var horiz: bool = absf(span.x) > absf(span.z)
 		var length := span.length()
 		var deck_w := 3.4
+		# A raised plank deck — its top sits at y 0.55, clear above the water,
+		# so it reads as a jetty (the player is lifted onto it by surface_height).
 		var deck := Build.box(length if horiz else deck_w, 0.3,
 			deck_w if horiz else length, plank_m)
-		deck.position = Vector3(mid.x, 0.34, mid.z)
+		deck.position = Vector3(mid.x, 0.40, mid.z)
 		add_child(deck)
 		var n := maxi(2, int(length / 3.0))
 		for i in n + 1:
 			var p := a.lerp(b, float(i) / float(n))
 			for side in [-1.0, 1.0]:
-				var pile := Build.cyl(0.22, 0.26, 2.4, 6, pile_m)
+				var pile := Build.cyl(0.22, 0.26, 2.6, 6, pile_m)
 				if horiz:
-					pile.position = Vector3(p.x, 0.0, p.z + side * deck_w / 2.0)
+					pile.position = Vector3(p.x, 0.5, p.z + side * deck_w / 2.0)
 				else:
-					pile.position = Vector3(p.x + side * deck_w / 2.0, 0.0, p.z)
+					pile.position = Vector3(p.x + side * deck_w / 2.0, 0.5, p.z)
 				add_child(pile)
-		var postn := Build.cyl(0.18, 0.2, 1.4, 6, pile_m)
-		postn.position = Vector3(b.x, 0.7, b.z)
+		var postn := Build.cyl(0.2, 0.24, 1.6, 6, pile_m)
+		postn.position = Vector3(b.x, 1.2, b.z)
 		add_child(postn)
 		var rw := (length + 1.0) if horiz else deck_w
 		var rd := deck_w if horiz else (length + 1.0)
@@ -1414,20 +1872,23 @@ func _build_airport() -> void:
 	add_child(field)
 
 	# --- Causeway — the single land link, bridging the bay from the city shore
-	#     south to the terminal forecourt. ---
+	#     to the airfield edge. The deck stops at the airfield so it never pokes
+	#     up through the grass or apron, and the rails sit inset on the deck. ---
 	var cw_x := 80.0
-	var cw_z := (CAUSEWAY.z0 + CAUSEWAY.z1) / 2.0
-	var cw_len: float = CAUSEWAY.z1 - CAUSEWAY.z0
+	var cw_z0: float = CAUSEWAY.z0
+	var cw_z1: float = AIRFIELD.z0 + 3.0          # meet the airfield, don't overrun it
+	var cw_len := cw_z1 - cw_z0
+	var cw_z := (cw_z0 + cw_z1) / 2.0
 	var causeway := Build.box(16.0, 0.4, cw_len, Build.mat(Build.hex(0x33343a), 0.9))
 	causeway.position = Vector3(cw_x, 0.2, cw_z)
 	add_child(causeway)
-	for rail_x in [cw_x - 8.3, cw_x + 8.3]:
-		var rail := Build.box(0.5, 1.0, cw_len, Build.mat(Build.hex(0x6a6e74), 0.5, 0.4))
-		rail.position = Vector3(rail_x, 0.75, cw_z)
+	for rail_x in [cw_x - 7.6, cw_x + 7.6]:
+		var rail := Build.box(0.5, 0.9, cw_len, Build.mat(Build.hex(0x6a6e74), 0.5, 0.4))
+		rail.position = Vector3(rail_x, 0.85, cw_z)
 		add_child(rail)
 	var cw_dash_m := Build.mat(Build.hex(0xd9c020), 0.85)
-	var cwz := CAUSEWAY.z0 + 4.0
-	while cwz < CAUSEWAY.z1 - 2.0:
+	var cwz := cw_z0 + 4.0
+	while cwz < cw_z1 - 2.0:
 		var cwd := Build.box(0.3, 0.06, 2.4, cw_dash_m)
 		cwd.position = Vector3(cw_x, 0.41, cwz)
 		add_child(cwd)
@@ -1603,6 +2064,12 @@ func _add_mountains() -> void:
 		var z := sin(ang) * dist
 		if z > WORLD_HALF + 20.0:        # keep the southern sea clear
 			continue
+		# Keep the city clear. The city is a SQUARE — its diagonal corners reach
+		# much further than a radial test, so measure distance to the rectangle.
+		var csx := clampf(x, -WORLD_HALF, WORLD_HALF)
+		var csz := clampf(z, -WORLD_HALF, WORLD_HALF)
+		if Vector2(x - csx, z - csz).length() < r + 34.0:
+			continue
 		# Keep the grass airfield clear — no mountain may intrude on it.
 		var ax := clampf(x, AIRFIELD.x0, AIRFIELD.x1)
 		var az := clampf(z, AIRFIELD.z0, AIRFIELD.z1)
@@ -1633,6 +2100,11 @@ func _add_outer_landscape() -> void:
 		var x := cos(ang) * dist
 		var z := sin(ang) * dist
 		if z > WORLD_HALF - 4.0:
+			continue
+		# Keep the city square clear — corners reach further than a radial test.
+		var csx := clampf(x, -WORLD_HALF, WORLD_HALF)
+		var csz := clampf(z, -WORLD_HALF, WORLD_HALF)
+		if Vector2(x - csx, z - csz).length() < 46.0:
 			continue
 		# Keep the grass airfield (and a margin around it) free of hills/trees.
 		var fx := clampf(x, AIRFIELD.x0, AIRFIELD.x1)
@@ -1694,6 +2166,16 @@ func _build_window_multimesh() -> void:
 	_window_xforms.clear()
 
 func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
+	# Inside the trading-floor office only its own glass walls block the player;
+	# the city far below is irrelevant.
+	if trading_floor_active:
+		var tf := TRADING_FLOOR
+		if absf(x - tf.x) < 12.0 and absf(z - tf.z) < 9.0:
+			for w in _office_walls:
+				if x > w.x - w.w / 2.0 - r and x < w.x + w.w / 2.0 + r \
+					and z > w.z - w.d / 2.0 - r and z < w.z + w.d / 2.0 + r:
+					return true
+			return false
 	for b in buildings:
 		if altitude > b.h + 2.0:
 			continue
@@ -1714,12 +2196,11 @@ func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 	# The President's estate island and its link causeway are solid ground.
 	if _on_estate(x, z) or _on_estate_causeway(x, z):
 		return false
-	# The city river is open water — only the bridge decks carry roads across it.
+	# The city river is open water — the bridges arch high above it, so anything
+	# down at ground level is blocked the whole length of the channel.
 	if absf(x - RIVER_CX) < RIVER_HALF and z > -WORLD_HALF and z < WORLD_HALF \
-		and altitude < 1.5:
-		var rgf: float = fmod(z + WORLD_HALF, BLOCK)
-		if minf(rgf, BLOCK - rgf) > (ROAD_W + 2.0) / 2.0:
-			return true
+		and altitude < BRIDGE_H - 1.2:
+		return true
 	# The sea to the south is impassable on the ground, but planes fly over it.
 	if z > WORLD_HALF + 5.0 and altitude < 5.0:
 		return true

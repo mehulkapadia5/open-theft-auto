@@ -27,4 +27,12 @@ const LIST: Array = [
 		"repulsor_dmg": 42.0, "repulsor_cd": 0.10,
 		"has_missiles": true, "missile_dmg": 100.0, "missile_cd": 0.5,
 	},
+	{
+		# The Hulkbuster — a massive heavy-assault rig. Slower in the air than
+		# War Machine, but devastating: top-tier repulsors and missiles.
+		"name": "Hulkbuster", "price": 1_800_000_000,
+		"fly_v": 18.0, "fly_h": 26.0,
+		"repulsor_dmg": 75.0, "repulsor_cd": 0.09,
+		"has_missiles": true, "missile_dmg": 170.0, "missile_cd": 0.45,
+	},
 ]

@@ -29,12 +29,18 @@ var dealership_terminal: DealershipTerminal
 var suit_terminal: SuitTerminal
 var realtor_terminal: RealtorTerminal
 var race_terminal: RaceTerminal
+var phone                        # the phone menu (loaded by path, see _ready)
+var phone_open := false          # true while the phone menu is on screen
 var terminal_open := false       # true while any kiosk terminal is on screen
 var _near_exchange := false      # on foot and within reach of the exchange kiosk
 var _near_dealership := false    # on foot and within reach of the dealership kiosk
 var _near_stark := false         # on foot and within reach of the Stark lab kiosk
 var _near_realtor := false       # on foot and within reach of the realtor kiosk
 var _near_paddock := false       # in an F1 car at the Grand Prix paddock
+var in_trading_floor := false    # inside the exchange's glass trading office
+var _trading_return := Vector3.ZERO   # street position to drop back to on exit
+var _near_trade_desk := false    # within reach of the office monitor desk
+var _near_office_exit := false   # standing on the office exit pad
 var _race_active := false        # the player is currently in a structured race
 var _race_count_shown := -1      # last countdown number announced
 var _owned_spawn = null          # the player's last car spawned onto the lot
@@ -97,6 +103,9 @@ var last_fire_at := -10.0
 var cop_timer := 0.0
 var wanted_decay := 0.0
 var vip_spawn_timer := 0.0       # countdown to topping the streets back up with VIPs
+var swat_timer := 0.0            # countdown to the next SWAT van at high wanted
+var police_heli = null           # the hunting police chopper (4+ stars)
+var _swat_vans: Array = []       # deployed SWAT van nodes
 var car_drifting := false        # player car mid-handbrake-slide (race scoring)
 var racers: Array = []           # AI race cars looping the F1 circuit
 # Space programme — the rocket journey to the Moon and back.
@@ -172,6 +181,11 @@ func _ready() -> void:
 	stock_terminal = StockTerminal.new()
 	add_child(stock_terminal)
 	stock_terminal.closed.connect(_on_terminal_closed)
+
+	phone = load("res://scripts/phone.gd").new()
+	add_child(phone)
+	phone.closed.connect(_on_phone_closed)
+	phone.action.connect(_on_phone_action)
 
 	dealership_terminal = DealershipTerminal.new()
 	add_child(dealership_terminal)
@@ -258,7 +272,9 @@ func _on_start() -> void:
 	_spawn_iron_suit()
 	_spawn_racers()
 	_spawn_rocket()
+	_spawn_moon_buggy()
 	space_state = ""
+	AudioFX.start_ambient()
 	# President motorcade — armed and on a timer.
 	pres_state = "home"
 	pres_timer = 75.0
@@ -337,6 +353,11 @@ func _respawn() -> void:
 	_near_stark = false
 	_near_realtor = false
 	_near_paddock = false
+	if in_trading_floor:
+		in_trading_floor = false
+		world.set_trading_floor(false)
+		_near_trade_desk = false
+		_near_office_exit = false
 	if _race_active:
 		RaceManager.abort_race()
 		_race_active = false
@@ -380,26 +401,35 @@ func _handle_key(keycode: int) -> void:
 		KEY_F:
 			if suit_state == "on":
 				_unsuit()
-			elif suit_state == "none":
+			elif suit_state == "none" and not in_trading_floor:
 				_try_enter_exit()
 		KEY_V:
 			if suit_state == "none" and in_car == null and not parachuting \
-				and not terminal_open:
+				and not terminal_open and not in_trading_floor:
 				_summon_suit()
 		KEY_E:
-			if not terminal_open and in_car == null \
-				and suit_state == "none" and not parachuting:
-				if _near_exchange:
+			if terminal_open or in_car != null \
+				or suit_state != "none" or parachuting:
+				return
+			if in_trading_floor:
+				if _near_trade_desk:
 					_open_terminal()
-				elif _near_dealership:
-					_open_dealership()
-				elif _near_stark:
-					_open_stark()
-				elif _near_realtor:
-					_open_realtor()
+				elif _near_office_exit:
+					_exit_trading_floor()
+			elif _near_exchange:
+				_enter_trading_floor()
+			elif _near_dealership:
+				_open_dealership()
+			elif _near_stark:
+				_open_stark()
+			elif _near_realtor:
+				_open_realtor()
 		KEY_G:
 			if not terminal_open and _near_paddock and not RaceManager.is_active():
 				_open_race_terminal()
+		KEY_P:
+			if not terminal_open and not phone_open:
+				_open_phone()
 		KEY_Q, KEY_TAB:
 			_switch_weapon(1)
 		KEY_Z:
@@ -455,6 +485,32 @@ func _open_realtor() -> void:
 	GameState.paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	realtor_terminal.open()
+
+
+# ---------------- Trading-floor office ----------------
+func _enter_trading_floor() -> void:
+	_trading_return = player_pos
+	in_trading_floor = true
+	world.set_trading_floor(true)
+	var ex: Dictionary = CityWorld.OFFICE_EXIT
+	player_pos = Vector3(ex.x, CityWorld.TRADING_FLOOR.y, ex.z)
+	player_yaw = 0.0
+	player_node.position = player_pos
+	player_node.rotation.y = player_yaw
+	_near_exchange = false
+	AudioFX.coin()
+	_show_objective("Exchange trading floor — walk to the desk to trade.", 4.5)
+
+
+func _exit_trading_floor() -> void:
+	in_trading_floor = false
+	world.set_trading_floor(false)
+	_near_trade_desk = false
+	_near_office_exit = false
+	player_pos = _trading_return
+	player_pos.y = world.surface_height(player_pos.x, player_pos.z)
+	player_node.position = player_pos
+	_show_objective("Back on the street.", 2.5)
 
 
 func _open_race_terminal() -> void:
@@ -555,6 +611,72 @@ func _on_terminal_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
+# ---------------- Phone ----------------
+func _open_phone() -> void:
+	phone_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	phone.open()
+
+
+func _on_phone_closed() -> void:
+	phone_open = false
+	GameState.paused = false
+	_mouse_rel = Vector2.ZERO
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## Carry out a phone quick-action — vehicle delivery, fast travel or a service.
+func _on_phone_action(id: String) -> void:
+	match id:
+		"car_sports":
+			_phone_deliver_car("sports", 54.0, 0x2b384e)
+		"car_f1":
+			_phone_deliver_car("f1", 100.0, 0xc0392b)
+		"tp_airport":
+			_phone_teleport(CityWorld.AIRPORT.x, CityWorld.AIRPORT.z)
+		"tp_exchange":
+			_phone_teleport(CityWorld.EXCHANGE.x, CityWorld.EXCHANGE.z)
+		"tp_launch":
+			_phone_teleport(CityWorld.LAUNCH.x, CityWorld.LAUNCH.z)
+		"heal":
+			player_hp = player_max_hp
+			player_armor = player_max_armor
+			GameState.init_weapon_ammo()
+			_show_objective("Full heal and ammo restock.", 4.0)
+		"bribe":
+			if GameState.money >= 50000:
+				GameState.money -= 50000
+				GameState.wanted = 0.0
+				for c in cops:
+					c.node.queue_free()
+				cops.clear()
+				_clear_police_extras()
+				_show_objective("Cops bribed — you're off the radar.", 4.0)
+			else:
+				_show_objective("Not enough cash to bribe the cops.", 4.0)
+
+
+func _phone_deliver_car(style: String, speed: float, color: int) -> void:
+	var c := _make_vehicle(player_pos.x + 5.0, player_pos.z + 2.0, color, style)
+	c.max_speed = speed
+	vehicles.append(c)
+	_show_objective("A %s was delivered beside you." % style, 4.0)
+
+
+func _phone_teleport(x: float, z: float) -> void:
+	in_car = null
+	parachuting = false
+	cam_dist = 6.5
+	if space_state != "":
+		space_state = ""
+		_set_space_sky(false)
+	player_pos = Vector3(x, 0, z)
+	player_node.position = player_pos
+	player_node.visible = true
+	_show_objective("Fast-travelled.", 3.0)
+
+
 # =====================================================================
 # Main loop
 # =====================================================================
@@ -581,6 +703,8 @@ func _process(delta: float) -> void:
 	elif in_car != null:
 		if in_car.get("is_rocket", false):
 			_update_rocket(in_car, dt)
+		elif in_car.get("moon", false):
+			_update_moon_buggy(in_car, dt)
 		elif in_car.get("is_heli", false):
 			_update_helicopter(in_car, dt)
 		elif in_car.get("is_boat", false):
@@ -618,8 +742,10 @@ func _process(delta: float) -> void:
 		suit_node.position.y = _ground_y() + 0.06 + sin(_now * 2.0) * 0.12
 
 	_update_shooting()
+	_update_tank_fire()
 	_update_npcs(dt)
 	_update_cops(dt)
+	_update_police_heli(dt)
 	_update_vips(dt)
 	_update_guards(dt)
 	_update_president(dt)
@@ -656,6 +782,8 @@ func _process(delta: float) -> void:
 	RaceManager.tick(dt, player_pos,
 		in_car != null and not in_car.is_plane, car_drifting)
 	_update_race(dt)
+	AudioFX.set_radio(in_car != null and not in_car.is_plane
+		and not in_car.get("is_boat", false))
 	_update_camera()
 	_push_hud()
 
@@ -741,11 +869,13 @@ func _update_on_foot(dt: float) -> void:
 		var rgt := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
 		var dx := (rgt.x * mx + fwd.x * mz) * spd * dt
 		var dz := (rgt.z * mx + fwd.z * mz) * spd * dt
-		if not world.collides_at(player_pos.x + dx, player_pos.z, 0.4):
+		if not world.collides_at(player_pos.x + dx, player_pos.z, 0.4, player_pos.y):
 			player_pos.x += dx
-		if not world.collides_at(player_pos.x, player_pos.z + dz, 0.4):
+		if not world.collides_at(player_pos.x, player_pos.z + dz, 0.4, player_pos.y):
 			player_pos.z += dz
 		player_yaw = atan2(dx, dz)
+	# Walk up onto raised surfaces — the river bridges and the dock jetties.
+	player_pos.y = world.surface_height(player_pos.x, player_pos.z)
 	player_node.position = player_pos
 	player_node.rotation.y = player_yaw
 	Human.animate(player_node, walk_phase, l > 0.0, 0.7, 0.49)
@@ -764,7 +894,7 @@ func _update_on_foot(dt: float) -> void:
 		CityWorld.EXCHANGE.z - player_pos.z).length()
 	var near_exchange := ed < 3.6
 	if near_exchange and not _near_exchange:
-		_show_objective("Trading terminal - press E to buy and sell stocks.", 4.0)
+		_show_objective("Vice Beach Exchange - press E to enter the trading floor.", 4.0)
 	_near_exchange = near_exchange
 
 	# Walk up to the dealership kiosk to buy and spawn cars (press E).
@@ -791,6 +921,15 @@ func _update_on_foot(dt: float) -> void:
 		_show_objective("Vice Realty - press E to buy a safehouse.", 4.0)
 	_near_realtor = near_realtor
 
+	# Inside the trading-floor office: detect the monitor desk and the exit pad.
+	if in_trading_floor:
+		var td := Vector2(CityWorld.OFFICE_DESK.x - player_pos.x,
+			CityWorld.OFFICE_DESK.z - player_pos.z).length()
+		_near_trade_desk = td < 3.0
+		var xd := Vector2(CityWorld.OFFICE_EXIT.x - player_pos.x,
+			CityWorld.OFFICE_EXIT.z - player_pos.z).length()
+		_near_office_exit = xd < 2.4
+
 
 # ---------------- Car ----------------
 func _update_car(v: Dictionary, dt: float) -> void:
@@ -814,29 +953,35 @@ func _update_car(v: Dictionary, dt: float) -> void:
 	var max_s: float = v.max_speed * boost
 	v.speed = clamp(v.speed, -max_s / 2.0, max_s)
 	if abs(v.speed) > 1.0 and randf() < 0.15:
-		AudioFX.engine()
+		AudioFX.engine_rev(absf(v.speed) / maxf(v.max_speed, 1.0))
 	if abs(v.speed) > 0.5:
 		var sgn := 1.0 if v.speed > 0.0 else -1.0
 		v.yaw += turn * 1.8 * dt * sgn * min(1.0, abs(v.speed) / 6.0)
 
 	var dx: float = sin(v.yaw) * v.speed * dt
 	var dz: float = cos(v.yaw) * v.speed * dt
-	if not world.collides_at(v.pos.x + dx, v.pos.z, 1.2):
+	if not world.collides_at(v.pos.x + dx, v.pos.z, 1.2, v.pos.y):
 		v.pos.x += dx
 	else:
 		_spawn_sparks(v.pos.x, 0.8, v.pos.z, 4)
 		v.hp -= abs(v.speed) * 0.3
 		v.speed *= -0.3
 		AudioFX.hit()
-	if not world.collides_at(v.pos.x, v.pos.z + dz, 1.2):
+	if not world.collides_at(v.pos.x, v.pos.z + dz, 1.2, v.pos.y):
 		v.pos.z += dz
 	else:
 		_spawn_sparks(v.pos.x, 0.8, v.pos.z, 4)
 		v.hp -= abs(v.speed) * 0.3
 		v.speed *= -0.3
 		AudioFX.hit()
+	# Ride up and over the elevated river bridges.
+	v.pos.y = world.surface_height(v.pos.x, v.pos.z)
 	v.node.position = v.pos
 	v.node.rotation.y = v.yaw
+
+	# A bike is open — show the player sitting astride it.
+	if v.get("style", "") == "bike":
+		_seat_bike_rider(v)
 
 	# Pit lane — slow down inside it and the car repairs itself.
 	if world.track != null and world.track.in_pit_lane(v.pos) \
@@ -873,6 +1018,22 @@ func _update_car(v: Dictionary, dt: float) -> void:
 					player_pos = Vector3(s.x, 0, s.y)
 				player_hp -= 30.0
 				player_node.visible = true
+
+
+## Pose the player astride a bike — seated on the saddle, hands on the bars.
+func _seat_bike_rider(v: Dictionary) -> void:
+	player_node.visible = true
+	var fwd := Vector3(sin(v.yaw), 0.0, cos(v.yaw))
+	# Sit slightly back from the bike's centre, on the saddle.
+	player_node.position = Vector3(v.pos.x, v.pos.y, v.pos.z) - fwd * 0.35
+	player_node.rotation.y = v.yaw
+	if player_node.has_meta("limbs"):
+		var lim: Dictionary = player_node.get_meta("limbs")
+		# Legs tucked forward to the pegs, arms reaching the handlebars.
+		lim.legL.rotation.x = 0.95
+		lim.legR.rotation.x = 0.95
+		lim.armL.rotation.x = -1.05
+		lim.armR.rotation.x = -1.05
 
 
 # ---------------- Plane ----------------
@@ -1041,6 +1202,13 @@ func _try_enter_exit() -> void:
 		if v.get("is_rocket", false):
 			_exit_rocket(v)
 			return
+		if v.get("moon", false):
+			in_car = null
+			cam_dist = 6.5
+			player_pos = Vector3(v.pos.x + 3.6, CityWorld.MOON_Y, v.pos.z)
+			player_node.visible = true
+			_show_objective("Stepped off the moon buggy.")
+			return
 		if v.is_plane and v.pos.y > 4.0:
 			# Bail out — parachute down; the empty plane is lost.
 			var bail := Vector3(v.pos.x, v.pos.y, v.pos.z)
@@ -1063,7 +1231,9 @@ func _try_enter_exit() -> void:
 			return
 		in_car = null
 		cam_dist = 6.5
-		player_pos = Vector3(v.pos.x + cos(v.yaw + PI / 2.0) * 2.0, 0, v.pos.z + sin(v.yaw + PI / 2.0) * 2.0)
+		var exit_x: float = v.pos.x + cos(v.yaw + PI / 2.0) * 2.0
+		var exit_z: float = v.pos.z + sin(v.yaw + PI / 2.0) * 2.0
+		player_pos = Vector3(exit_x, world.surface_height(exit_x, exit_z), exit_z)
 		player_node.visible = true
 		_show_objective("On foot. Mouse to aim, click to shoot. Hold Space to zoom into a first-person aim.")
 		return
@@ -1084,7 +1254,8 @@ func _try_enter_exit() -> void:
 	if best != null:
 		in_car = best
 		cam_yaw = best.yaw + PI
-		player_node.visible = false
+		# Open vehicles (the bike) keep the rider on show; closed ones hide them.
+		player_node.visible = best.get("style", "") == "bike"
 		if best.get("is_rocket", false):
 			cam_dist = best.get("cam_dist", 28.0)
 			if space_state == "moon":
@@ -1188,6 +1359,11 @@ func _build_iron_suit(tier := 1) -> Node3D:
 			primary = Build.mat(Build.hex(0x52565d), 0.4, 0.7)
 			secondary = Build.mat(Build.hex(0x303338), 0.45, 0.6)
 			dark = Build.mat(Build.hex(0x1a1b20), 0.5, 0.5)
+		4:
+			# Hulkbuster — heavy red-and-gold assault armour.
+			primary = Build.mat(Build.hex(0xb83838), 0.34, 0.55)
+			secondary = Build.mat(Build.hex(0xd0a840), 0.3, 0.7)
+			dark = Build.mat(Build.hex(0x2a2a30), 0.5, 0.5)
 		_:
 			primary = Build.mat(Build.hex(0xb01a1a), 0.34, 0.55)
 			secondary = Build.mat(Build.hex(0xe0ad28), 0.3, 0.7)
@@ -1296,6 +1472,9 @@ func _build_iron_suit(tier := 1) -> Node3D:
 	g.set_meta("limbs", {"armL": armL, "armR": armR, "legL": legL, "legR": legR, "headG": headG})
 	g.set_meta("pieces", pieces)
 	g.set_meta("rest", rest)
+	# The Hulkbuster is a massive rig — wear it large.
+	if tier >= 4:
+		g.scale = Vector3(1.5, 1.5, 1.5)
 	return g
 
 
@@ -1728,6 +1907,26 @@ func _update_shooting() -> void:
 		_fire_weapon(w)
 
 
+## Tank cannon — L-click fires an explosive shell forward along the hull.
+func _update_tank_fire() -> void:
+	if in_car == null or in_car.get("style", "") != "tank":
+		return
+	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		return
+	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		return
+	if _now - last_fire_at < 1.4:
+		return
+	last_fire_at = _now
+	var v: Dictionary = in_car
+	var dir := Vector3(sin(v.yaw), 0.05, cos(v.yaw)).normalized()
+	var tip: Vector3 = v.pos + dir * 5.2 + Vector3(0, 2.1, 0)
+	var shell := {"range": 220.0, "damage": 120.0, "explosive": true, "pellets": 1.0}
+	_spawn_bullet(tip, dir, shell, "player", _missile_mat, 98.0, 0.45)
+	_raise_wanted(1.5)
+	AudioFX.explode()
+
+
 func _fire_weapon(w: Dictionary) -> void:
 	var dir := -camera.global_transform.basis.z
 	dir = dir.normalized()
@@ -1962,20 +2161,27 @@ func _update_npcs(dt: float) -> void:
 # =====================================================================
 # Police & wanted
 # =====================================================================
-func _spawn_cop(near: Vector3) -> void:
+func _spawn_cop(near: Vector3, swat := false) -> void:
 	for tries in 20:
 		var ang := randf() * TAU
-		var dist := 60.0 + randf() * 40.0
+		var dist := (16.0 if swat else 60.0) + randf() * 36.0
 		var x := near.x + cos(ang) * dist
 		var z := near.z + sin(ang) * dist
 		if world.collides_at(x, z, 1.0):
 			continue
-		var node := Human.build(0xf4c28a, 0x232f44, 0x14192a, 0x2a1a08, 0x14192a)
+		var node: Node3D
+		var hp := 80.0
+		if swat:
+			node = Human.build(0x3a3a42, 0x14161c, 0x0e0f14, 0x0a0a0a, 0x14161c)
+			hp = 180.0
+		else:
+			node = Human.build(0xf4c28a, 0x232f44, 0x14192a, 0x2a1a08, 0x14192a)
 		node.position = Vector3(x, 0, z)
 		add_child(node)
 		cops.append({
 			"node": node, "pos": Vector3(x, 0, z), "yaw": 0.0,
-			"hp": 80.0, "max_hp": 80.0, "last_shot": 0.0, "walk_phase": randf() * TAU,
+			"hp": hp, "max_hp": hp, "last_shot": 0.0, "walk_phase": randf() * TAU,
+			"swat": swat,
 		})
 		return
 
@@ -1989,9 +2195,10 @@ func _update_cops(dt: float) -> void:
 		var dz: float = target.z - c.pos.z
 		var d := sqrt(dx * dx + dz * dz)
 		c.yaw = atan2(dx, dz)
+		var cspd := 6.6 if c.get("swat", false) else 5.0
 		if d > 7.0:
-			var nx: float = c.pos.x + sin(c.yaw) * 5.0 * dt
-			var nz: float = c.pos.z + cos(c.yaw) * 5.0 * dt
+			var nx: float = c.pos.x + sin(c.yaw) * cspd * dt
+			var nz: float = c.pos.z + cos(c.yaw) * cspd * dt
 			if not world.collides_at(nx, c.pos.z, 0.4):
 				c.pos.x = nx
 			if not world.collides_at(c.pos.x, nz, 0.4):
@@ -2000,7 +2207,8 @@ func _update_cops(dt: float) -> void:
 		c.node.rotation.y = c.yaw
 		c.walk_phase += dt * 7.0
 		Human.animate(c.node, c.walk_phase, d > 7.0, 0.6, 0.36)
-		if d < 60.0 and _now - c.last_shot > 0.7:
+		var fire_gap := 0.45 if c.get("swat", false) else 0.7
+		if d < 60.0 and _now - c.last_shot > fire_gap:
 			c.last_shot = _now
 			var from := Vector3(c.pos.x, 1.4, c.pos.z)
 			var dir := (Vector3(target.x, 1.2, target.z) - from).normalized()
@@ -2029,6 +2237,7 @@ func _update_wanted(dt: float) -> void:
 			for c in cops:
 				c.node.queue_free()
 			cops.clear()
+		_clear_police_extras()
 		return
 	if GameState.wanted >= 1.0:
 		cop_timer -= dt
@@ -2036,7 +2245,15 @@ func _update_wanted(dt: float) -> void:
 			cop_timer = max(4.0, 10.0 - GameState.wanted * 1.4)
 			var n: int = max(1, int(GameState.wanted))
 			for i in n:
-				_spawn_cop(player_pos)
+				_spawn_cop(player_pos, GameState.wanted >= 3.0)
+	# SWAT vans roll in at 3+ stars, a hunting chopper joins at 4+.
+	if GameState.wanted >= 3.0:
+		swat_timer -= dt
+		if swat_timer <= 0.0:
+			swat_timer = 17.0
+			_spawn_swat_van()
+	if GameState.wanted >= 4.0 and police_heli == null:
+		_spawn_police_heli()
 	wanted_decay += dt
 	if wanted_decay > 4.0 and GameState.wanted > 0.0:
 		GameState.wanted = max(0.0, GameState.wanted - dt * 0.18)
@@ -2045,6 +2262,7 @@ func _update_wanted(dt: float) -> void:
 			for c in cops:
 				c.node.queue_free()
 			cops.clear()
+			_clear_police_extras()
 	var giveup := 90.0 if GameState.wanted < 2.0 else 180.0
 	var keep: Array = []
 	for c in cops:
@@ -2053,6 +2271,152 @@ func _update_wanted(dt: float) -> void:
 		else:
 			keep.append(c)
 	cops = keep
+
+
+## Free the chopper and any SWAT vans — called when the heat clears.
+func _clear_police_extras() -> void:
+	if police_heli != null:
+		if is_instance_valid(police_heli.node):
+			police_heli.node.queue_free()
+		police_heli = null
+	for vn in _swat_vans:
+		if is_instance_valid(vn):
+			vn.queue_free()
+	_swat_vans.clear()
+
+
+## Drop a SWAT van on open ground near the player and deploy a team.
+func _spawn_swat_van() -> void:
+	var spot := Vector3.INF
+	for tries in 24:
+		var a := randf() * TAU
+		var d := 42.0 + randf() * 30.0
+		var x := player_pos.x + cos(a) * d
+		var z := player_pos.z + sin(a) * d
+		if not world.collides_at(x, z, 2.6):
+			spot = Vector3(x, 0, z)
+			break
+	if spot.x > 1e8:
+		return
+	var van := _build_swat_van()
+	van.position = spot
+	van.rotation.y = randf() * TAU
+	add_child(van)
+	_swat_vans.append(van)
+	for i in 3:
+		_spawn_cop(spot, true)
+	while _swat_vans.size() > 4:
+		var old = _swat_vans.pop_front()
+		if is_instance_valid(old):
+			old.queue_free()
+
+
+func _build_swat_van() -> Node3D:
+	var g := Node3D.new()
+	var body_m := Build.mat(Build.hex(0x20242c), 0.7, 0.2)
+	var dark := Build.mat(Build.hex(0x0e0f12), 0.6)
+	var tire_m := Build.mat(Build.hex(0x0a0a0a), 0.95)
+	var blue := Build.emissive(Build.hex(0x12203a), Color("4f7fff"), 2.0)
+	var red := Build.emissive(Build.hex(0x3a1212), Color("ff4f4f"), 2.0)
+	var body := Build.box(2.5, 2.4, 6.0, body_m)
+	body.position.y = 1.7
+	g.add_child(body)
+	var cab := Build.box(2.4, 1.4, 1.8, body_m)
+	cab.position = Vector3(0, 1.4, 3.0)
+	g.add_child(cab)
+	var bull := Build.box(2.7, 0.7, 0.6, dark)
+	bull.position = Vector3(0, 0.85, 4.15)
+	g.add_child(bull)
+	for sx in [-1.0, 1.0]:
+		for sz in [-1.7, 1.7]:
+			var tire := Build.cyl(0.6, 0.6, 0.5, 12, tire_m)
+			tire.rotation.z = PI / 2.0
+			tire.position = Vector3(sx * 1.25, 0.6, sz)
+			g.add_child(tire)
+	var lb := Build.box(0.5, 0.3, 0.5, blue)
+	lb.position = Vector3(-0.55, 3.05, 0.5)
+	g.add_child(lb)
+	var lr := Build.box(0.5, 0.3, 0.5, red)
+	lr.position = Vector3(0.55, 3.05, 0.5)
+	g.add_child(lr)
+	return g
+
+
+func _spawn_police_heli() -> void:
+	var node := _build_police_heli()
+	var px := player_pos.x + 64.0
+	var pz := player_pos.z + 64.0
+	node.position = Vector3(px, 62.0, pz)
+	add_child(node)
+	police_heli = {
+		"node": node, "rotor": node.get_meta("rotor"),
+		"pos": Vector3(px, 62.0, pz), "yaw": 0.0, "last_shot": 0.0,
+	}
+	_show_objective("Police chopper inbound — take cover!", 4.0)
+
+
+func _build_police_heli() -> Node3D:
+	var g := Node3D.new()
+	var body_m := Build.mat(Build.hex(0x1c2330), 0.5, 0.3)
+	var dark := Build.mat(Build.hex(0x0e0f14), 0.6)
+	var glass := Build.mat(Build.hex(0x141d28), 0.1, 0.4)
+	var body := Build.box(2.2, 1.9, 4.4, body_m)
+	g.add_child(body)
+	var nose := Build.box(1.8, 1.3, 1.4, glass)
+	nose.position = Vector3(0, -0.1, 2.6)
+	g.add_child(nose)
+	var boom := Build.box(0.5, 0.5, 4.0, body_m)
+	boom.position = Vector3(0, 0.4, -3.6)
+	g.add_child(boom)
+	var fin := Build.box(0.18, 1.4, 1.0, body_m)
+	fin.position = Vector3(0, 1.05, -5.3)
+	g.add_child(fin)
+	for sx in [-1.0, 1.0]:
+		var skid := Build.box(0.16, 0.16, 3.4, dark)
+		skid.position = Vector3(sx * 1.0, -1.3, 0.2)
+		g.add_child(skid)
+	var mast := Build.box(0.3, 0.5, 0.3, dark)
+	mast.position = Vector3(0, 1.2, 0)
+	g.add_child(mast)
+	var rotor := Node3D.new()
+	rotor.position = Vector3(0, 1.5, 0)
+	for ri in 2:
+		var blade := Build.box(9.0, 0.1, 0.5, dark)
+		blade.rotation.y = ri * PI / 2.0
+		rotor.add_child(blade)
+	g.add_child(rotor)
+	g.set_meta("rotor", rotor)
+	return g
+
+
+## The hunting chopper — tracks the player from above and strafes them.
+func _update_police_heli(dt: float) -> void:
+	if police_heli == null:
+		return
+	if GameState.wanted < 3.5 or city_owned:
+		_clear_police_extras()
+		return
+	var h: Dictionary = police_heli
+	var target: Vector3 = in_car.pos if in_car != null else player_pos
+	var to := Vector2(target.x - h.pos.x, target.z - h.pos.z)
+	var dist := to.length()
+	if dist > 16.0:
+		var step := to.normalized() * 30.0 * dt
+		h.pos.x += step.x
+		h.pos.z += step.y
+	h.pos.y = lerpf(h.pos.y, target.y + 36.0, dt * 0.8)
+	h.yaw = atan2(target.x - h.pos.x, target.z - h.pos.z)
+	h.node.position = h.pos
+	h.node.rotation.y = h.yaw
+	h.rotor.rotation.y += dt * 34.0
+	if dist < 95.0 and _now - h.last_shot > 1.0:
+		h.last_shot = _now
+		var from: Vector3 = h.pos
+		var dir := (Vector3(target.x, target.y + 1.2, target.z) - from).normalized()
+		dir.x += (randf() - 0.5) * 0.06
+		dir.z += (randf() - 0.5) * 0.06
+		_spawn_bullet(from, dir.normalized(), WeaponDB.LIST[2], "cop")
+		AudioFX.shoot()
 
 
 func _raise_wanted(amt: float) -> void:
@@ -2464,6 +2828,75 @@ func _spawn_rocket() -> void:
 	vehicles.append(_make_rocket(CityWorld.LAUNCH.x, CityWorld.LAUNCH.z))
 
 
+## An open-frame moon buggy, parked on the lunar surface near the lander.
+func _make_moon_buggy(x: float, z: float) -> Dictionary:
+	var g := Node3D.new()
+	var frame_m := Build.mat(Build.hex(0xcdd0d4), 0.5, 0.5)
+	var dark := Build.mat(Build.hex(0x2a2d33), 0.6)
+	var gold := Build.mat(Build.hex(0xd9b24a), 0.4, 0.6)
+	var floor_p := Build.box(2.2, 0.2, 3.4, gold)
+	floor_p.position.y = 0.72
+	g.add_child(floor_p)
+	for fz in [-1.3, 1.3]:
+		var bar := Build.box(2.0, 0.12, 0.12, frame_m)
+		bar.position = Vector3(0, 1.5, fz)
+		g.add_child(bar)
+	for fx in [-1.0, 1.0]:
+		var side := Build.box(0.12, 0.12, 2.8, frame_m)
+		side.position = Vector3(fx, 1.5, 0.0)
+		g.add_child(side)
+		for fz2 in [-1.3, 1.3]:
+			var post := Build.box(0.12, 0.85, 0.12, frame_m)
+			post.position = Vector3(fx, 1.1, fz2)
+			g.add_child(post)
+	var seat := Build.box(1.0, 0.5, 0.9, dark)
+	seat.position = Vector3(0, 1.05, -0.2)
+	g.add_child(seat)
+	var dish := Build.cyl(0.2, 1.0, 0.35, 10, frame_m)
+	dish.rotation.x = -0.8
+	dish.position = Vector3(0.7, 1.95, -1.2)
+	g.add_child(dish)
+	for sx in [-1.0, 1.0]:
+		for sz in [-1.0, 1.0]:
+			var tire := Build.cyl(0.6, 0.6, 0.42, 12, dark)
+			tire.rotation.z = PI / 2.0
+			tire.position = Vector3(sx * 1.2, 0.6, sz * 1.25)
+			g.add_child(tire)
+	g.position = Vector3(x, CityWorld.MOON_Y, z)
+	add_child(g)
+	return {
+		"node": g, "pos": Vector3(x, CityWorld.MOON_Y, z), "yaw": 0.0,
+		"speed": 0.0, "max_speed": 24.0, "hp": 200.0, "max_hp": 200.0,
+		"style": "buggy", "moon": true, "is_plane": false,
+		"burning": false, "burn_timer": 0.0,
+	}
+
+
+func _spawn_moon_buggy() -> void:
+	vehicles.append(_make_moon_buggy(CityWorld.MOON_PAD.x + 16.0,
+		CityWorld.MOON_PAD.z + 9.0))
+
+
+## Drive the buggy across the open lunar surface — flat at MOON_Y, low-gravity
+## float over the bumps, no city collision.
+func _update_moon_buggy(v: Dictionary, dt: float) -> void:
+	var accel := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
+	var turn := (1.0 if _key(KEY_A) else 0.0) - (1.0 if _key(KEY_D) else 0.0)
+	v.speed += accel * 20.0 * dt
+	v.speed *= 1.0 - dt * 0.9
+	v.speed = clampf(v.speed, -9.0, v.max_speed)
+	if absf(v.speed) > 0.4:
+		var sgn := 1.0 if v.speed > 0.0 else -1.0
+		v.yaw += turn * 1.4 * dt * sgn * minf(1.0, absf(v.speed) / 6.0)
+	v.pos.x += sin(v.yaw) * v.speed * dt
+	v.pos.z += cos(v.yaw) * v.speed * dt
+	v.pos.y = CityWorld.MOON_Y
+	var bounce: float = absf(sin(_now * 5.0)) * minf(absf(v.speed) * 0.04, 0.4)
+	v.node.position = Vector3(v.pos.x, CityWorld.MOON_Y + bounce, v.pos.z)
+	v.node.rotation.y = v.yaw
+	player_pos = v.pos
+
+
 ## The Y the rocket's base rests on, by trip leg. The booster only adds height
 ## while it is still attached (the launch); once dropped, the upper stage sits
 ## on its own base.
@@ -2513,6 +2946,8 @@ func _update_rocket(v: Dictionary, dt: float) -> void:
 		var target: float = v.throttle * v.max_speed - brake * 45.0
 		v.speed = move_toward(v.speed, target, v.max_speed * 0.5 * dt)
 	v.plume.visible = v.speed > 2.0 or v.throttle > 0.12
+	if v.throttle > 0.25 and randf() < 0.16:
+		AudioFX.rumble()
 
 	v.pos.y += v.speed * dt
 	var floor_y := _rocket_floor()
@@ -2755,9 +3190,31 @@ func _make_plane(x: float, z: float, yaw: float, scale := 1.0) -> Dictionary:
 # =====================================================================
 # Boats
 # =====================================================================
-## A small open speedboat — nose points +Z.
-func _make_boat(x: float, z: float, yaw: float) -> Dictionary:
+## A water craft — speedboat, jetski or submarine. Nose points +Z.
+func _make_boat(x: float, z: float, yaw: float, style := "boat") -> Dictionary:
 	var g := Node3D.new()
+	var max_speed := 26.0
+	match style:
+		"jetski":
+			_build_jetski_mesh(g)
+			max_speed = 34.0
+		"submarine":
+			_build_submarine_mesh(g)
+			max_speed = 18.0
+		_:
+			_build_speedboat_mesh(g)
+	g.position = Vector3(x, 0.35, z)
+	g.rotation.y = yaw
+	add_child(g)
+	return {
+		"node": g, "pos": Vector3(x, 0.35, z), "yaw": yaw, "speed": 0.0,
+		"max_speed": max_speed, "hp": 150.0, "max_hp": 150.0, "style": style,
+		"burning": false, "burn_timer": 0.0, "is_plane": false, "is_boat": true,
+		"bob": randf() * TAU, "dive": 0.0,
+	}
+
+
+func _build_speedboat_mesh(g: Node3D) -> void:
 	var hull_c: int = [0xe8e8e8, 0xcf3a3a, 0x2f6fb0, 0xf0c020][randi() % 4]
 	var hull_m := Build.mat(Build.hex(hull_c), 0.5, 0.2)
 	var deck_m := Build.mat(Build.hex(0xc9a878), 0.8)
@@ -2790,31 +3247,89 @@ func _make_boat(x: float, z: float, yaw: float) -> Dictionary:
 	var motor := Build.box(0.7, 1.05, 0.7, trim_m)
 	motor.position = Vector3(0, 0.95, -4.6)
 	g.add_child(motor)
-	g.position = Vector3(x, 0.35, z)
-	g.rotation.y = yaw
-	add_child(g)
-	return {
-		"node": g, "pos": Vector3(x, 0.35, z), "yaw": yaw, "speed": 0.0,
-		"max_speed": 26.0, "hp": 150.0, "max_hp": 150.0, "style": "boat",
-		"burning": false, "burn_timer": 0.0, "is_plane": false, "is_boat": true,
-		"bob": randf() * TAU,
-	}
 
 
-## Moor a boat at every dock the world laid out.
+func _build_jetski_mesh(g: Node3D) -> void:
+	var hull_c: int = [0xcf3a3a, 0x2f6fb0, 0xf0c020, 0x33aa55][randi() % 4]
+	var hull_m := Build.mat(Build.hex(hull_c), 0.45, 0.3)
+	var dark := Build.mat(Build.hex(0x1a1a1f), 0.5)
+	var hull := Build.box(1.1, 0.6, 3.5, hull_m)
+	hull.position.y = 0.55
+	g.add_child(hull)
+	var bow := Build.box(1.0, 0.55, 1.1, hull_m)
+	bow.position = Vector3(0, 0.62, 2.0)
+	bow.rotation.x = -0.42
+	g.add_child(bow)
+	var seat := Build.box(0.74, 0.3, 1.5, dark)
+	seat.position = Vector3(0, 0.92, -0.35)
+	g.add_child(seat)
+	var col := Build.box(0.42, 0.62, 0.5, hull_m)
+	col.position = Vector3(0, 1.12, 0.95)
+	g.add_child(col)
+	var bars := Build.box(0.9, 0.1, 0.12, dark)
+	bars.position = Vector3(0, 1.4, 1.05)
+	g.add_child(bars)
+
+
+func _build_submarine_mesh(g: Node3D) -> void:
+	var hull_m := Build.mat(Build.hex(0x33433a), 0.7, 0.35)
+	var dark := Build.mat(Build.hex(0x1a1f1c), 0.6)
+	var glass := Build.mat(Build.hex(0x9fc4d8), 0.15, 0.4)
+	var hull := Build.cyl(1.3, 1.3, 10.6, 16, hull_m)
+	hull.rotation.x = PI / 2.0
+	hull.position.y = 0.7
+	g.add_child(hull)
+	var nose := Build.cyl(0.3, 1.3, 1.9, 14, hull_m)
+	nose.rotation.x = PI / 2.0
+	nose.position = Vector3(0, 0.7, 6.2)
+	g.add_child(nose)
+	var tail := Build.cyl(0.3, 1.3, 1.9, 14, hull_m)
+	tail.rotation.x = -PI / 2.0
+	tail.position = Vector3(0, 0.7, -6.2)
+	g.add_child(tail)
+	var tower := Build.box(1.0, 1.6, 2.6, hull_m)
+	tower.position = Vector3(0, 2.0, 0.4)
+	g.add_child(tower)
+	var ports := Build.box(1.04, 0.4, 1.4, glass)
+	ports.position = Vector3(0, 2.3, 0.5)
+	g.add_child(ports)
+	var fin := Build.box(0.18, 0.9, 1.5, dark)
+	fin.position = Vector3(0, 3.0, 0.1)
+	g.add_child(fin)
+	var peri := Build.cyl(0.08, 0.08, 1.4, 6, dark)
+	peri.position = Vector3(0, 3.5, 0.9)
+	g.add_child(peri)
+
+
+## Moor water craft at the docks — speedboats, a couple of jetskis, one sub.
 func _spawn_boats() -> void:
+	var i := 0
 	for d in world.docks:
 		var b: Vector3 = d.board
 		var dir: Vector2 = d.dir
 		var bx: float = b.x + dir.x * 3.2
 		var bz: float = b.z + dir.y * 3.2
 		var yaw: float = 0.0 if absf(dir.x) > absf(dir.y) else PI / 2.0
-		vehicles.append(_make_boat(bx, bz, yaw))
+		var style := "boat"
+		if i % 3 == 1:
+			style = "jetski"
+		elif i == 0:
+			style = "submarine"
+		vehicles.append(_make_boat(bx, bz, yaw, style))
+		# A jetski tucked alongside every speedboat dock for variety.
+		if style == "boat":
+			vehicles.append(_make_boat(bx + dir.y * 4.0, bz + dir.x * 4.0,
+				yaw, "jetski"))
+		i += 1
 
 
 func _update_boat(v: Dictionary, dt: float) -> void:
 	var accel := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
 	var turn := (1.0 if _key(KEY_A) else 0.0) - (1.0 if _key(KEY_D) else 0.0)
+	# Submarines dive — Down submerges, Up surfaces.
+	if v.get("style", "") == "submarine":
+		var d := (1.0 if _key(KEY_DOWN) else 0.0) - (1.0 if _key(KEY_UP) else 0.0)
+		v.dive = clampf(v.get("dive", 0.0) + d * 3.5 * dt, 0.0, 3.2)
 	v.speed += accel * v.max_speed * 0.5 * dt
 	v.speed *= 1.0 - dt * 0.7
 	v.speed = clampf(v.speed, -v.max_speed * 0.4, v.max_speed)
@@ -2833,7 +3348,8 @@ func _update_boat(v: Dictionary, dt: float) -> void:
 	else:
 		v.speed *= -0.25
 	v.bob += dt * 2.4
-	v.node.position = Vector3(v.pos.x, 0.35 + sin(v.bob) * 0.07, v.pos.z)
+	v.node.position = Vector3(v.pos.x,
+		0.35 - v.get("dive", 0.0) + sin(v.bob) * 0.07, v.pos.z)
 	v.node.rotation.y = v.yaw
 	v.node.rotation.z = sin(v.bob) * 0.045
 	v.node.rotation.x = -clampf(v.speed * 0.012, -0.12, 0.12)

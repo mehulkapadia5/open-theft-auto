@@ -6,7 +6,7 @@ class_name CarMesh
 ##
 ## Nose points +Z. Wheels rest on y = 0; the body floats above on its tyres.
 
-const STYLES := ["sedan", "coupe", "sports", "suv", "hyper", "f1"]
+const STYLES := ["sedan", "coupe", "sports", "suv", "hyper", "f1", "bike", "tank"]
 
 ## Body proportions per style. cab_y / roof_y / hood_y are derived in build()
 ## from ride height and box sizes so the cabin always sits on the body.
@@ -67,6 +67,10 @@ static func build(color: int, style := "sedan", open_hood := false,
 		head_m: Material = null, tail_m: Material = null) -> Node3D:
 	if style == "f1":
 		return _build_f1(color)
+	if style == "bike":
+		return _build_bike(color)
+	if style == "tank":
+		return _build_tank(color)
 	var p := _profile(style)
 	var g := Node3D.new()
 
@@ -260,4 +264,88 @@ static func _build_f1(color: int) -> Node3D:
 				arm.position = Vector3(tx - sx4 * arm_len / 2.0, tr, tz + az)
 				g.add_child(arm)
 
+	return g
+
+
+## A low-poly motorcycle — two in-line wheels, frame, tank, seat, handlebars.
+## Nose points +Z; wheels rest on y = 0.
+static func _build_bike(color: int) -> Node3D:
+	var g := Node3D.new()
+	var body_m := Build.mat(Build.hex(color), 0.36, 0.4)
+	var dark_m := Build.mat(Build.hex(0x16181c), 0.5, 0.4)
+	var tire_m := Build.mat(Build.hex(0x0a0a0a), 0.95)
+	var rim_m := Build.mat(Build.hex(0xcccccc), 0.25, 0.95)
+	var head_m := Build.emissive(Build.hex(0xfff6c0), Build.hex(0xfff6c0), 0.5)
+
+	for tz in [-0.95, 1.05]:
+		var tire := Build.cyl(0.45, 0.45, 0.26, 16, tire_m)
+		tire.rotation.z = PI / 2.0
+		tire.position = Vector3(0, 0.45, tz)
+		g.add_child(tire)
+		var rim := Build.cyl(0.22, 0.22, 0.3, 10, rim_m)
+		rim.rotation.z = PI / 2.0
+		rim.position = Vector3(0, 0.45, tz)
+		g.add_child(rim)
+	var frame := Build.box(0.34, 0.4, 2.0, dark_m)
+	frame.position = Vector3(0, 0.74, 0.0)
+	g.add_child(frame)
+	var tank := Build.box(0.56, 0.46, 1.0, body_m)
+	tank.position = Vector3(0, 1.02, 0.35)
+	g.add_child(tank)
+	var seat := Build.box(0.5, 0.22, 1.0, dark_m)
+	seat.position = Vector3(0, 0.96, -0.55)
+	g.add_child(seat)
+	var fairing := Build.box(0.5, 0.7, 0.5, body_m)
+	fairing.position = Vector3(0, 0.95, 1.15)
+	g.add_child(fairing)
+	var bars := Build.box(0.9, 0.12, 0.12, dark_m)
+	bars.position = Vector3(0, 1.2, 0.95)
+	g.add_child(bars)
+	var hl := Build.box(0.34, 0.3, 0.14, head_m)
+	hl.position = Vector3(0, 1.0, 1.42)
+	g.add_child(hl)
+	var pipe := Build.cyl(0.1, 0.12, 1.4, 8, Build.mat(Build.hex(0x8e9298), 0.3, 0.8))
+	pipe.rotation.x = PI / 2.0
+	pipe.position = Vector3(0.34, 0.6, -0.7)
+	g.add_child(pipe)
+	return g
+
+
+## A low-poly tank — wide hull, side tracks, a turret and a forward cannon.
+## Nose (cannon) points +Z; tracks rest on y = 0.
+static func _build_tank(color: int) -> Node3D:
+	var g := Node3D.new()
+	var hull_m := Build.mat(Build.hex(color), 0.85, 0.1)
+	var dark_m := Build.mat(Build.hex(0x20221f), 0.8)
+	var metal_m := Build.mat(Build.hex(0x6a6e63), 0.5, 0.5)
+
+	for sx in [-1.0, 1.0]:
+		var track := Build.box(0.7, 1.0, 5.0, dark_m)
+		track.position = Vector3(sx * 1.35, 0.5, 0.0)
+		g.add_child(track)
+		for wi in 4:
+			var roller := Build.cyl(0.42, 0.42, 0.75, 10, metal_m)
+			roller.rotation.z = PI / 2.0
+			roller.position = Vector3(sx * 1.35, 0.42, -1.65 + wi * 1.1)
+			g.add_child(roller)
+	var hull := Build.box(2.6, 0.95, 4.4, hull_m)
+	hull.position = Vector3(0, 1.15, 0.0)
+	g.add_child(hull)
+	var glacis := Build.box(2.5, 0.5, 1.2, hull_m)
+	glacis.position = Vector3(0, 1.05, 2.3)
+	g.add_child(glacis)
+	# Turret + cannon.
+	var turret := Build.cyl(1.25, 1.45, 0.95, 12, hull_m)
+	turret.position = Vector3(0, 2.0, -0.3)
+	g.add_child(turret)
+	var mantlet := Build.box(0.9, 0.6, 0.7, hull_m)
+	mantlet.position = Vector3(0, 2.05, 0.7)
+	g.add_child(mantlet)
+	var barrel := Build.cyl(0.18, 0.22, 3.4, 10, metal_m)
+	barrel.rotation.x = PI / 2.0
+	barrel.position = Vector3(0, 2.1, 2.6)
+	g.add_child(barrel)
+	var hatch := Build.cyl(0.45, 0.45, 0.18, 10, metal_m)
+	hatch.position = Vector3(0, 2.52, -0.6)
+	g.add_child(hatch)
 	return g

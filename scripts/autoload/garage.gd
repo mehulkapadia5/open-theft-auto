@@ -11,7 +11,7 @@ extends Node
 signal updated
 
 var owned_vehicles: Array[int] = []     # catalog indices the player owns
-var suit_tier: int = 1                  # 1 = Mark III (free), 2 = Mark VI, 3 = War Machine
+var suit_tier: int = 1                  # 1 Mark III · 2 Mark VI · 3 War Machine · 4 Hulkbuster
 var properties: Array[int] = []         # PropertyCatalog indices the player owns
 var active_property: int = -1           # owned property used as the respawn home (-1 = none)
 
