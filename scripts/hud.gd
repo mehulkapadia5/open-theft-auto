@@ -18,6 +18,8 @@ const PANEL_EDGE := Color(0.55, 0.6, 0.65, 0.32)
 var _boot: Control
 var _hud: Control
 var _death: Control
+var _victory: Control
+var _victory_timer := 0.0
 var _objective: Label
 var _money: Label
 var _stars: Stars
@@ -30,6 +32,14 @@ var _ammo: Label
 var _speed_label: Label
 var _speed_val: Label
 var _minimap: Minimap
+var _speedo: Speedometer
+var _speedo_panel: PanelContainer
+var _race_panel: PanelContainer
+var _race_pos: Label
+var _race_lap: Label
+var _race_time: Label
+var _race_best: Label
+var _race_drift: Label
 var _obj_timer := 0.0
 
 
@@ -38,6 +48,9 @@ class Minimap extends Control:
 	var px := 0.0
 	var pz := 0.0
 	var pyaw := 0.0
+	var pa := false              # President's motorcade is out
+	var pgx := 0.0
+	var pgz := 0.0
 
 	const ROAD := Color(0.30, 0.31, 0.35)
 	const GRASS := Color(0.30, 0.39, 0.24)
@@ -50,8 +63,13 @@ class Minimap extends Control:
 		pyaw = yaw
 		queue_redraw()
 
+	func set_president(active: bool, x: float, z: float) -> void:
+		pa = active
+		pgx = x
+		pgz = z
+
 	func _span() -> float:
-		return CityWorld.WORLD_HALF * 2.0 * 1.16
+		return 1080.0           # wide enough to take in the bay, airport and estate
 
 	func _w2m(wx: float, wz: float) -> Vector2:
 		var span := _span()
@@ -59,30 +77,44 @@ class Minimap extends Control:
 
 	func _draw() -> void:
 		var span := _span()
-		# City ground.
-		var c0 := _w2m(-CityWorld.WORLD_HALF, -CityWorld.WORLD_HALF)
-		var c1 := _w2m(CityWorld.WORLD_HALF, CityWorld.WORLD_HALF)
-		draw_rect(Rect2(c0, c1 - c0), GRASS)
-		# Beach strip along the south edge.
-		var b0 := _w2m(-CityWorld.WORLD_HALF, CityWorld.WORLD_HALF - 20.0)
-		draw_rect(Rect2(b0, Vector2(c1.x - c0.x, c1.y - b0.y)), SAND)
+		var wh: float = CityWorld.WORLD_HALF
+		# The bay fills the frame; landmasses sit on top.
+		draw_rect(Rect2(Vector2.ZERO, size), WATER)
+		# Mainland — wilderness and the city, everything north of the shoreline.
+		var land0 := _w2m(-span / 2.0, -span / 2.0)
+		var land1 := _w2m(span / 2.0, wh)
+		draw_rect(Rect2(land0, land1 - land0), GRASS)
+		# Beach strip along the south edge of the city.
+		var bs0 := _w2m(-wh, wh - 20.0)
+		var bs1 := _w2m(wh, wh)
+		draw_rect(Rect2(bs0, bs1 - bs0), SAND)
 		# River.
-		var rw: float = CityWorld.BLOCK - CityWorld.ROAD_W - 3.0
-		var rv0 := _w2m(CityWorld.RIVER_CX - rw / 2.0, -CityWorld.WORLD_HALF)
-		var rv1 := _w2m(CityWorld.RIVER_CX + rw / 2.0, CityWorld.WORLD_HALF)
+		var rv0 := _w2m(CityWorld.RIVER_CX - CityWorld.RIVER_HALF, -wh)
+		var rv1 := _w2m(CityWorld.RIVER_CX + CityWorld.RIVER_HALF, wh)
 		draw_rect(Rect2(rv0, rv1 - rv0), WATER)
 		# Road grid.
 		for i in range(CityWorld.GRID + 1):
-			var g: float = -CityWorld.WORLD_HALF + i * CityWorld.BLOCK
-			var va := _w2m(g, -CityWorld.WORLD_HALF)
-			var vb := _w2m(g, CityWorld.WORLD_HALF)
-			draw_line(va, vb, ROAD, 2.0)
-			var ha := _w2m(-CityWorld.WORLD_HALF, g)
-			var hb := _w2m(CityWorld.WORLD_HALF, g)
-			draw_line(ha, hb, ROAD, 2.0)
+			var g: float = -wh + i * CityWorld.BLOCK
+			draw_line(_w2m(g, -wh), _w2m(g, wh), ROAD, 1.5)
+			draw_line(_w2m(-wh, g), _w2m(wh, g), ROAD, 1.5)
+		# Airport island and the President's estate island.
+		_landmass(CityWorld.AIRFIELD.x0, CityWorld.AIRFIELD.z0,
+			CityWorld.AIRFIELD.x1, CityWorld.AIRFIELD.z1)
+		_landmass(CityWorld.ESTATE_GROUNDS.x0, CityWorld.ESTATE_GROUNDS.z0,
+			CityWorld.ESTATE_GROUNDS.x1, CityWorld.ESTATE_GROUNDS.z1)
+		_causeway(CityWorld.CAUSEWAY)
+		_causeway(CityWorld.ESTATE_CAUSEWAY)
 		# Landmarks.
 		_marker(CityWorld.AIRPORT.x, CityWorld.AIRPORT.z, Color("e0b050"))
 		_marker(CityWorld.EXCHANGE.x, CityWorld.EXCHANGE.z, Color("4fe6b0"))
+		_marker(CityWorld.PRESIDENT_HOUSE.x, CityWorld.PRESIDENT_HOUSE.z, Color("c878e0"))
+		# The President — a pulsing red marker while his motorcade is out.
+		if pa:
+			var pp := _w2m(clampf(pgx, -span / 2.0, span / 2.0),
+				clampf(pgz, -span / 2.0, span / 2.0))
+			draw_circle(pp, 6.5, Color("e23b3b"))
+			draw_circle(pp, 6.5, Color(0, 0, 0, 0.6), false, 1.5)
+			draw_circle(pp, 11.0, Color("e23b3b"), false, 2.0)
 		# Player arrow.
 		var fwd := Vector2(sin(pyaw), cos(pyaw))
 		var perp := Vector2(fwd.y, -fwd.x)
@@ -93,6 +125,16 @@ class Minimap extends Control:
 		draw_colored_polygon(tri, Color("f4f4f0"))
 		draw_polyline(PackedVector2Array([tri[0], tri[1], tri[2], tri[0]]),
 			Color(0, 0, 0, 0.6), 1.0, true)
+
+	func _landmass(x0: float, z0: float, x1: float, z1: float) -> void:
+		var a := _w2m(x0, z0)
+		var b := _w2m(x1, z1)
+		draw_rect(Rect2(a, b - a), GRASS)
+
+	func _causeway(r: Dictionary) -> void:
+		var a := _w2m(r.x0, r.z0)
+		var b := _w2m(r.x1, r.z1)
+		draw_rect(Rect2(a, b - a), ROAD)
 
 	func _marker(wx: float, wz: float, col: Color) -> void:
 		var p := _w2m(wx, wz)
@@ -134,13 +176,79 @@ class Stars extends Control:
 			draw_polyline(loop, EMPTY, 1.3, true)
 
 
+## A semicircular car speedometer — arc gauge, sweeping needle, digital readout.
+class Speedometer extends Control:
+	const W := 210.0
+	const H := 132.0
+	const START := 135.0          # arc start angle (degrees)
+	const SWEEP := 270.0          # total arc sweep
+	const TRACK := Color(0.5, 0.52, 0.56, 0.55)
+	const FILL := Color("c2a05a")
+	const REDLINE := Color("c8534a")
+	const NEEDLE := Color("e8e6e0")
+
+	var _frac := 0.0
+	var _num: Label
+
+	func _ready() -> void:
+		custom_minimum_size = Vector2(W, H)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_num = Label.new()
+		_num.add_theme_font_size_override("font_size", 40)
+		_num.add_theme_color_override("font_color", NEEDLE)
+		_num.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_num.size = Vector2(W, 46)
+		_num.position = Vector2(0, 40)
+		_num.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_num.text = "0"
+		add_child(_num)
+		var unit := Label.new()
+		unit.text = "KM/H"
+		unit.add_theme_font_size_override("font_size", 13)
+		unit.add_theme_color_override("font_color", Color(0.55, 0.57, 0.6))
+		unit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		unit.size = Vector2(W, 16)
+		unit.position = Vector2(0, 86)
+		unit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(unit)
+
+	func set_speed(kmh: float, frac: float) -> void:
+		_frac = clampf(frac, 0.0, 1.0)
+		if _num != null:
+			_num.text = str(int(round(kmh)))
+		queue_redraw()
+
+	func _draw() -> void:
+		var c := Vector2(W / 2.0, H - 12.0)
+		var r := 78.0
+		var s := deg_to_rad(START)
+		var e := deg_to_rad(START + SWEEP)
+		draw_arc(c, r, s, e, 96, TRACK, 5.0, true)
+		var rl := deg_to_rad(START + SWEEP * 0.82)
+		draw_arc(c, r, rl, e, 32, REDLINE, 5.0, true)
+		if _frac > 0.002:
+			var fe := deg_to_rad(START + SWEEP * _frac)
+			draw_arc(c, r, s, fe, 96, FILL, 5.0, true)
+		for i in 10:
+			var a := deg_to_rad(START + SWEEP * i / 9.0)
+			var d := Vector2(cos(a), sin(a))
+			draw_line(c + d * (r - 12.0), c + d * (r - 3.0), TRACK, 2.0)
+		var na := deg_to_rad(START + SWEEP * _frac)
+		var nd := Vector2(cos(na), sin(na))
+		draw_line(c, c + nd * (r - 8.0), NEEDLE, 3.0, true)
+		draw_circle(c, 6.0, NEEDLE)
+		draw_circle(c, 3.0, Color("23262b"))
+
+
 func _ready() -> void:
 	layer = 10
 	_build_boot()
 	_build_hud()
 	_build_death()
+	_build_victory()
 	_hud.visible = false
 	_death.visible = false
+	_victory.visible = false
 
 func _panel_style() -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
@@ -224,7 +332,7 @@ func _build_boot() -> void:
 	var controls := _label(
 		"WASD move / drive    Mouse look    L-Click shoot    F enter/exit vehicle\n"
 		+ "Q / Tab / Z weapons    1-9 pick    scroll cycle    SHIFT sprint / boost\n"
-		+ "SPACE handbrake    E use downtown kiosks (stocks / cars / suits / property)    M mute    R respawn / heal    ESC release mouse",
+		+ "SPACE handbrake    E downtown kiosks    G enter Grand Prix (in an F1 car)    M mute    R respawn / heal    ESC release mouse",
 		15, Color(0.55, 0.57, 0.6))
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(controls)
@@ -318,6 +426,39 @@ func _build_hud() -> void:
 	map_panel.offset_bottom = -16
 	_hud.add_child(map_panel)
 
+	# Speedometer — bottom-centre, only visible while driving a car.
+	_speedo = Speedometer.new()
+	_speedo_panel = _panel(_speedo)
+	_speedo_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_speedo_panel.anchor_left = 0.5
+	_speedo_panel.anchor_right = 0.5
+	_speedo_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_speedo_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_speedo_panel.offset_bottom = -16
+	_speedo_panel.visible = false
+	_hud.add_child(_speedo_panel)
+
+	# Race panel — top-right, only visible while driving (lap timing + drift).
+	var race_box := VBoxContainer.new()
+	race_box.add_theme_constant_override("separation", 2)
+	_race_pos = _label("P 1/1", 22, TEXT)
+	race_box.add_child(_race_pos)
+	_race_lap = _label("LAP 0", 15, GOLD)
+	race_box.add_child(_race_lap)
+	_race_time = _label("0:00.00", 27, TEXT)
+	race_box.add_child(_race_time)
+	_race_best = _label("BEST  --:--", 13, ACCENT)
+	race_box.add_child(_race_best)
+	_race_drift = _label("DRIFT  0", 13, MONEY)
+	race_box.add_child(_race_drift)
+	_race_panel = _panel(race_box)
+	_race_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_race_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_race_panel.offset_right = -16
+	_race_panel.offset_top = 68
+	_race_panel.visible = false
+	_hud.add_child(_race_panel)
+
 	# Objective ticker
 	_objective = _label("", 17, TEXT)
 	_objective.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -385,17 +526,44 @@ func _build_death() -> void:
 	bw.add_child(btn)
 	vb.add_child(bw)
 
+## A full-bleed "CITY OWNED" banner — non-blocking, fades out on its own.
+func _build_victory() -> void:
+	_victory = Control.new()
+	_victory.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_victory.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_victory)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_victory.add_child(center)
+	var vb := VBoxContainer.new()
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 14)
+	center.add_child(vb)
+	var t := _label("CITY OWNED", 110, Color("e0b24a"))
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(t)
+	var p := _label("The President is dead. Vice Beach answers to you now.",
+		24, Color(0.86, 0.86, 0.9))
+	p.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(p)
+
 # ---------------- Public API ----------------
 func enter_game() -> void:
 	_boot.visible = false
 	_hud.visible = true
 	_death.visible = false
+	_victory.visible = false
 
 func show_death() -> void:
 	_death.visible = true
 
 func hide_death() -> void:
 	_death.visible = false
+
+func show_victory() -> void:
+	_victory.visible = true
+	_victory.modulate.a = 1.0
+	_victory_timer = 8.0
 
 func show_objective(text: String, secs := 3.5) -> void:
 	_objective.text = text
@@ -409,6 +577,12 @@ func _process(delta: float) -> void:
 		if _obj_timer <= 0.0:
 			var panel: Control = _objective.get_meta("panel")
 			panel.modulate.a = 0.0
+	if _victory_timer > 0.0:
+		_victory_timer -= delta
+		if _victory_timer < 1.5:
+			_victory.modulate.a = clampf(_victory_timer / 1.5, 0.0, 1.0)
+		if _victory_timer <= 0.0:
+			_victory.visible = false
 
 func update_hud(data: Dictionary) -> void:
 	_money.text = "$" + _commas(int(data.money))
@@ -421,8 +595,19 @@ func update_hud(data: Dictionary) -> void:
 	_ammo.text = (data.ammo if data.ammo is String else str(int(data.ammo)))
 	_speed_label.text = data.speed_label
 	_speed_val.text = str(int(data.speed_val))
+	_speedo_panel.visible = data.show_speedo
+	if data.show_speedo:
+		_speedo.set_speed(data.speed_kmh, data.speed_frac)
 	_waypoint.text = data.waypoint
+	_minimap.set_president(data.pres_active, data.pres_x, data.pres_z)
 	_minimap.set_player(data.map_x, data.map_z, data.map_yaw)
+	_race_panel.visible = data.racing
+	if data.racing:
+		_race_pos.text = "P %d/%d" % [int(data.race_rank), int(data.race_total)]
+		_race_lap.text = "LAP %d/%d" % [int(data.lap) + 1, int(data.total_laps)]
+		_race_time.text = data.lap_time
+		_race_best.text = "BEST  " + str(data.best_lap)
+		_race_drift.text = "DRIFT  " + _commas(int(data.drift))
 
 ## Group digits with thousands separators: 70991741333 -> "70,991,741,333".
 func _commas(value: int) -> String:

@@ -13,6 +13,9 @@ const NPC_SKINS := [0xf4c28a, 0xd99770, 0xa87657, 0x7a5a40]
 const NPC_SHIRTS := [0x8a4f3e, 0x47586a, 0x586a4a, 0x9c8a64, 0x3f4a58, 0x6f6f6c, 0xb0a690, 0x5a4c46]
 const NPC_PANTS := [0x2a2e36, 0x33384a, 0x4a2a1a, 0x35435a, 0x4a4a44]
 const NPC_HAIR := [0x2a1a08, 0x4a2a1a, 0xaa8866, 0x222222, 0xccaa44, 0xddccaa]
+# President motorcade pacing.
+const CONVOY_SPEED := 17.0       # how fast the motorcade rolls along its route
+const CONVOY_SPACING := 9.0      # gap between convoy vehicles along the route
 
 # ---------------- Nodes ----------------
 var world: CityWorld
@@ -25,11 +28,15 @@ var stock_terminal: StockTerminal
 var dealership_terminal: DealershipTerminal
 var suit_terminal: SuitTerminal
 var realtor_terminal: RealtorTerminal
+var race_terminal: RaceTerminal
 var terminal_open := false       # true while any kiosk terminal is on screen
 var _near_exchange := false      # on foot and within reach of the exchange kiosk
 var _near_dealership := false    # on foot and within reach of the dealership kiosk
 var _near_stark := false         # on foot and within reach of the Stark lab kiosk
 var _near_realtor := false       # on foot and within reach of the realtor kiosk
+var _near_paddock := false       # in an F1 car at the Grand Prix paddock
+var _race_active := false        # the player is currently in a structured race
+var _race_count_shown := -1      # last countdown number announced
 var _owned_spawn = null          # the player's last car spawned onto the lot
 var player_node: Node3D
 var weapon_holder: Node3D       # holds the visible weapon prop in the player's hand
@@ -74,6 +81,10 @@ var repulsor_at := -10.0
 var missile_at := -10.0
 const SUIT_STAGGER := 0.1
 const SUIT_GROW := 0.5
+# Summon: plates detach from the parked suit and streak across the map onto the
+# body, one staggered after the next, feet-first.
+const SUIT_SUMMON_STAGGER := 0.05
+const SUIT_SUMMON_FLIGHT := 0.8
 # Repulsor/missile reach is fixed; damage scales with the suit tier (see
 # SuitCatalog / Garage.suit_stats()).
 const REPULSOR_RANGE := 95.0
@@ -86,6 +97,30 @@ var last_fire_at := -10.0
 var cop_timer := 0.0
 var wanted_decay := 0.0
 var vip_spawn_timer := 0.0       # countdown to topping the streets back up with VIPs
+var car_drifting := false        # player car mid-handbrake-slide (race scoring)
+var racers: Array = []           # AI race cars looping the F1 circuit
+# Space programme — the rocket journey to the Moon and back.
+var space_state := ""            # "" / ascent / space_climb / space / moon_descent
+								 # / moon_landed / moon / moon_ascent / reentry / splashdown
+var _falling_boosters: Array = []   # separated booster stages tumbling down
+const ROCKET_BOOSTER_H := 15.0   # height of the booster stage
+const ROCKET_BASE_Y := 0.85      # launch-pad top
+# President & motorcade
+var pres_state := "home"         # home / toairport / atairport / tohome / athome
+var pres_timer := 75.0           # countdown to the next motorcade run
+var president = null             # the President entity dict (also in `vips`)
+var pres_aggro := false          # the detail has been provoked
+var convoy_prog := 0.0           # distance the motorcade has covered along its route
+var convoy_route: PackedVector3Array = PackedVector3Array()
+var _convoy_route_len := 0.0
+var city_owned := false          # the President is dead — the city is the player's
+var _city_income := 0.0          # fractional accumulator for passive city revenue
+var my_guards: Array = []        # the player-President's personal bodyguards
+var my_convoy: Array = []        # the player-President's escort vehicles
+var _convoy_form := 0.0          # seconds settled in a car — the convoy forms up
+var race_rank := 1               # player's current circuit position
+var race_total := 1
+var _player_prog := 0.0          # player's monotonic race progress (centreline steps)
 var _mouse_rel := Vector2.ZERO
 const VIP_TARGET := 4            # VIPs are unlimited — kept topped up to this many
 
@@ -152,6 +187,12 @@ func _ready() -> void:
 	add_child(realtor_terminal)
 	realtor_terminal.closed.connect(_on_terminal_closed)
 
+	race_terminal = RaceTerminal.new()
+	add_child(race_terminal)
+	race_terminal.closed.connect(_on_terminal_closed)
+	race_terminal.start_requested.connect(_start_race)
+	RaceManager.race_finished.connect(_on_race_finished)
+
 	GameState.started = false
 	GameState.paused = false
 	GameState.init_weapon_ammo()
@@ -191,12 +232,18 @@ func _on_start() -> void:
 	GameState.paused = false
 	GameState.reset_run()
 	StockMarket.reset()
+	RaceManager.reset()
+	RaceManager.track = world.track
 	Garage.reset()
 	terminal_open = false
 	_near_exchange = false
 	_near_dealership = false
 	_near_stark = false
 	_near_realtor = false
+	_near_paddock = false
+	_race_active = false
+	_race_count_shown = -1
+	_player_prog = 0.0
 	_owned_spawn = null
 	var s := world.find_safe_spawn()
 	player_pos = Vector3(s.x, 0, s.y)
@@ -204,13 +251,38 @@ func _on_start() -> void:
 	player_node.visible = true
 	_spawn_vehicles(40)
 	_spawn_airport_aircraft()
+	_spawn_boats()
 	for i in 40:
 		_spawn_npc()
 	_spawn_vip_groups(VIP_TARGET)
 	_spawn_iron_suit()
+	_spawn_racers()
+	_spawn_rocket()
+	space_state = ""
+	# President motorcade — armed and on a timer.
+	pres_state = "home"
+	pres_timer = 75.0
+	president = null
+	pres_aggro = false
+	convoy_prog = 0.0
+	city_owned = false
+	_city_income = 0.0
+	player_max_armor = 100.0
+	player_armor = 0.0
+	player_hp = player_max_hp
+	for g in my_guards:
+		if is_instance_valid(g.node):
+			g.node.queue_free()
+	my_guards.clear()
+	for e in my_convoy:
+		if is_instance_valid(e.node):
+			e.node.queue_free()
+	my_convoy.clear()
+	_convoy_form = 0.0
+	_build_convoy_route()
 	hud.enter_game()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - step onto it to fly. Downtown is the place to spend: STOCK EXCHANGE, VICE AUTOS (cars), STARK INDUSTRIES (suit upgrades) and VICE REALTY (safehouses) - press E at each kiosk.", 11.0)
+	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - press V to call it to you from anywhere, or step onto it, to fly. Downtown is the place to spend: STOCK EXCHANGE, VICE AUTOS (cars), STARK INDUSTRIES (suit upgrades) and VICE REALTY (safehouses) - press E at each kiosk.", 11.0)
 
 
 func _die() -> void:
@@ -224,6 +296,10 @@ func _respawn() -> void:
 	hud.hide_death()
 	GameState.paused = false
 	GameState.wanted = 0.0
+	# Drop out of any space leg cleanly — sky and gravity back to normal.
+	if space_state != "":
+		space_state = ""
+		_set_space_sky(false)
 	for c in cops:
 		c.node.queue_free()
 	cops.clear()
@@ -260,6 +336,10 @@ func _respawn() -> void:
 	_near_dealership = false
 	_near_stark = false
 	_near_realtor = false
+	_near_paddock = false
+	if _race_active:
+		RaceManager.abort_race()
+		_race_active = false
 	player_node.visible = true
 	GameState.init_weapon_ammo()
 	if Garage.active_property >= 0:
@@ -302,6 +382,10 @@ func _handle_key(keycode: int) -> void:
 				_unsuit()
 			elif suit_state == "none":
 				_try_enter_exit()
+		KEY_V:
+			if suit_state == "none" and in_car == null and not parachuting \
+				and not terminal_open:
+				_summon_suit()
 		KEY_E:
 			if not terminal_open and in_car == null \
 				and suit_state == "none" and not parachuting:
@@ -313,6 +397,9 @@ func _handle_key(keycode: int) -> void:
 					_open_stark()
 				elif _near_realtor:
 					_open_realtor()
+		KEY_G:
+			if not terminal_open and _near_paddock and not RaceManager.is_active():
+				_open_race_terminal()
 		KEY_Q, KEY_TAB:
 			_switch_weapon(1)
 		KEY_Z:
@@ -370,6 +457,61 @@ func _open_realtor() -> void:
 	realtor_terminal.open()
 
 
+func _open_race_terminal() -> void:
+	terminal_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	race_terminal.open()
+
+
+## Begin a Grand Prix: charge the entry fee + bet, put the player on pole and
+## the AI on the grid, and roll the countdown.
+func _start_race(laps: int, bet: int) -> void:
+	var t: Track = world.track
+	if t == null or in_car == null:
+		return
+	var cost: int = RaceManager.ENTRY_FEE + bet
+	if GameState.money < cost:
+		return
+	GameState.money -= cost
+	RaceManager.start_race(laps, bet)
+	_race_active = true
+	_race_count_shown = -1
+	# Player starts on pole.
+	var pole: Vector3 = t.grid_slot(0)
+	in_car.pos = Vector3(pole.x, 0.0, pole.z)
+	in_car.speed = 0.0
+	in_car.yaw = t.grid_yaw()
+	in_car.node.position = in_car.pos
+	in_car.node.rotation.y = in_car.yaw
+	player_pos = in_car.pos
+	# Line the AI field up just behind the start line, on the grid behind pole.
+	_player_prog = 0.0
+	var n: int = t.baked.size()
+	for i in racers.size():
+		var r = racers[i]
+		r.fi = float(n) - 3.0 - i * 2.0
+		r.lap = 0
+		r.speed = 0.0
+		r.prog = -4.0 - i * 2.0
+	_show_objective("Grand Prix — %d laps. Get ready..." % laps, 3.0)
+
+
+## Settle a finished race: place the player and pay out the bet.
+func _on_race_finished() -> void:
+	if not _race_active:
+		return
+	_race_active = false
+	var place: int = race_rank
+	var won: int = RaceManager.settle(place)
+	if place == 1:
+		_show_objective("WON THE GRAND PRIX!  P1  —  payout $%d" % won, 9.0)
+	elif won > 0:
+		_show_objective("Finished P%d of %d  —  payout $%d" % [place, race_total, won], 9.0)
+	else:
+		_show_objective("Finished P%d of %d  —  bet lost." % [place, race_total], 9.0)
+
+
 ## After buying a suit tier at Stark, deliver the suit to the lit pad beside
 ## the kiosk so the player can walk over and step onto it. If a suit is already
 ## being worn, the upgrade just applies live.
@@ -380,7 +522,7 @@ func _on_suit_purchased() -> void:
 		suit_node.position = Vector3(CityWorld.STARK_SUIT_PAD.x, 0.0,
 			CityWorld.STARK_SUIT_PAD.z)
 		suit_armed = true
-		_show_objective("%s delivered to the SUIT BAY pad outside — step onto it to suit up." % nm, 7.0)
+		_show_objective("%s delivered to the SUIT BAY pad outside — press V to call it to you, or step onto it, to suit up." % nm, 7.0)
 	else:
 		_show_objective("Suit upgraded to %s — its new look applies next time you suit up." % nm, 4.0)
 
@@ -437,14 +579,20 @@ func _process(delta: float) -> void:
 	if parachuting:
 		_update_parachute(dt)
 	elif in_car != null:
-		if in_car.get("is_heli", false):
+		if in_car.get("is_rocket", false):
+			_update_rocket(in_car, dt)
+		elif in_car.get("is_heli", false):
 			_update_helicopter(in_car, dt)
+		elif in_car.get("is_boat", false):
+			_update_boat(in_car, dt)
 		elif in_car.is_plane:
 			_update_plane(in_car, dt)
 		else:
 			_update_car(in_car, dt)
 	elif suit_state == "suiting":
 		_update_suiting(dt)
+	elif suit_state == "summoning":
+		_update_summoning(dt)
 	elif suit_state == "on":
 		_update_suit(dt)
 	else:
@@ -461,22 +609,35 @@ func _process(delta: float) -> void:
 
 	# Hold Space to aim down the crosshair in zoomed first-person (on foot or
 	# suited — only the mid-assembly suit-up locks it out).
-	aiming = in_car == null and not parachuting and suit_state != "suiting" and _key(KEY_SPACE)
+	aiming = in_car == null and not parachuting and suit_state != "suiting" \
+		and suit_state != "summoning" and _key(KEY_SPACE)
 
 	# Idle bob/spin for the parked Iron Man suit waiting to be worn.
 	if suit_node != null and suit_state == "none":
 		suit_node.rotation.y += dt * 0.7
-		suit_node.position.y = 0.06 + sin(_now * 2.0) * 0.12
+		suit_node.position.y = _ground_y() + 0.06 + sin(_now * 2.0) * 0.12
 
 	_update_shooting()
 	_update_npcs(dt)
 	_update_cops(dt)
 	_update_vips(dt)
 	_update_guards(dt)
+	_update_president(dt)
+	_update_my_detail(dt)
 	_update_wanted(dt)
 	_update_bullets(dt)
 	_update_particles(dt)
 	_update_pickups(dt)
+
+	# Once the city is owned, the treasury pays out a steady passive income and
+	# the President's armour stays maxed — 1000x a normal vest.
+	if city_owned:
+		_city_income += dt * 200000.0
+		if _city_income >= 1.0:
+			var inc := int(_city_income)
+			GameState.money += inc
+			_city_income -= inc
+		player_armor = player_max_armor
 
 	if GameState.wanted == 0.0 and player_hp < player_max_hp:
 		player_hp = min(player_max_hp, player_hp + dt * 4.0)
@@ -484,17 +645,91 @@ func _process(delta: float) -> void:
 		_die()
 		return
 
-	_update_daynight()
+	if not _in_space_sky():
+		_update_daynight()
+	_update_falling_boosters(dt)
 	for c in world.clouds:
 		c.node.position.x += c.drift * dt
 		if c.node.position.x > CityWorld.WORLD:
 			c.node.position.x = -CityWorld.WORLD
+	_update_racers(dt)
+	RaceManager.tick(dt, player_pos,
+		in_car != null and not in_car.is_plane, car_drifting)
+	_update_race(dt)
 	_update_camera()
 	_push_hud()
 
 
+# ---------------- Grand Prix race ----------------
+## Per-frame race housekeeping: paddock proximity, countdown announcements and
+## forfeit detection.
+func _update_race(dt: float) -> void:
+	# Paddock proximity — only in an F1 car, between races.
+	var np := false
+	if in_car != null and in_car.get("style", "") == "f1" and world.track != null \
+		and not RaceManager.is_active():
+		var pp: Vector3 = world.track.paddock_pos
+		np = Vector2(pp.x - in_car.pos.x, pp.z - in_car.pos.z).length() < 9.0
+	if np and not _near_paddock:
+		_show_objective("Grand Prix paddock — press G to enter a race.", 4.0)
+	_near_paddock = np
+
+	# Countdown announcements.
+	if RaceManager.state == "countdown":
+		var c := int(ceil(RaceManager.countdown))
+		if c != _race_count_shown:
+			_race_count_shown = c
+			if c >= 1 and c <= 3:
+				_show_objective(str(c), 1.0)
+	elif RaceManager.state == "racing" and _race_count_shown != 0:
+		_race_count_shown = 0
+		_show_objective("GO!", 1.5)
+
+	# Forfeit the race if the player loses the car.
+	if _race_active and (in_car == null or not vehicles.has(in_car)):
+		RaceManager.abort_race()
+		_race_active = false
+		_show_objective("Race forfeited — bet and entry fee lost.", 5.0)
+
+
 # ---------------- On foot ----------------
+## Floaty low-gravity walk on the Moon — slower, with a bounding bob, no city
+## collision (the lunar surface is open).
+func _update_moon_walk(dt: float) -> void:
+	var mx := (1.0 if _key(KEY_D) else 0.0) - (1.0 if _key(KEY_A) else 0.0)
+	var mz := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
+	var l := sqrt(mx * mx + mz * mz)
+	var spd := 4.6 if _key(KEY_SHIFT) else 2.9
+	if l > 0.0:
+		mx /= l
+		mz /= l
+		var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
+		var rgt := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
+		var dx := (rgt.x * mx + fwd.x * mz) * spd * dt
+		var dz := (rgt.z * mx + fwd.z * mz) * spd * dt
+		player_pos.x += dx
+		player_pos.z += dz
+		player_yaw = atan2(dx, dz)
+	var bob: float = absf(sin(walk_phase * 0.45)) * (0.55 if l > 0.0 else 0.0)
+	player_pos.y = CityWorld.MOON_Y + bob
+	player_node.position = player_pos
+	player_node.rotation.y = player_yaw
+	Human.animate(player_node, walk_phase * 0.6, l > 0.0, 0.7, 0.49)
+
+	# Step back onto the parked suit to re-wear it (and re-arm V summon).
+	if suit_node != null and suit_state == "none":
+		var sd := Vector2(suit_node.position.x - player_pos.x,
+			suit_node.position.z - player_pos.z).length()
+		if not suit_armed and sd > 3.6:
+			suit_armed = true
+		if suit_armed and sd < 2.2:
+			_begin_suit()
+
+
 func _update_on_foot(dt: float) -> void:
+	if space_state == "moon":
+		_update_moon_walk(dt)
+		return
 	var mx := (1.0 if _key(KEY_D) else 0.0) - (1.0 if _key(KEY_A) else 0.0)
 	var mz := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
 	var l := sqrt(mx * mx + mz * mz)
@@ -559,12 +794,22 @@ func _update_on_foot(dt: float) -> void:
 
 # ---------------- Car ----------------
 func _update_car(v: Dictionary, dt: float) -> void:
+	# Held on the grid until the lights go out.
+	if RaceManager.state == "countdown":
+		v.speed = 0.0
+		car_drifting = false
+		v.node.position = v.pos
+		v.node.rotation.y = v.yaw
+		return
 	var accel := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
 	var turn := (1.0 if _key(KEY_A) else 0.0) - (1.0 if _key(KEY_D) else 0.0)
 	var boost := 1.7 if _key(KEY_SHIFT) else 1.0
 	var handbrake := _key(KEY_SPACE)
+	car_drifting = handbrake and absf(v.speed) > 12.0 and turn != 0.0
 
-	v.speed += accel * 35.0 * dt
+	# Accel scales with the car's top speed so it can actually fight drag up to
+	# max_speed — a fixed force used to stall every car out near 210 km/h.
+	v.speed += accel * v.max_speed * 0.6 * boost * dt
 	v.speed *= 1.0 - dt * (4.0 if handbrake else 0.6)
 	var max_s: float = v.max_speed * boost
 	v.speed = clamp(v.speed, -max_s / 2.0, max_s)
@@ -592,6 +837,11 @@ func _update_car(v: Dictionary, dt: float) -> void:
 		AudioFX.hit()
 	v.node.position = v.pos
 	v.node.rotation.y = v.yaw
+
+	# Pit lane — slow down inside it and the car repairs itself.
+	if world.track != null and world.track.in_pit_lane(v.pos) \
+		and absf(v.speed) < 8.0 and v.hp < v.max_hp:
+		v.hp = minf(v.max_hp, v.hp + 26.0 * dt)
 
 	for o in npcs + cops + guards + vips:
 		if o.hp <= 0.0:
@@ -788,6 +1038,9 @@ func _update_helicopter(v: Dictionary, dt: float) -> void:
 func _try_enter_exit() -> void:
 	if in_car != null:
 		var v = in_car
+		if v.get("is_rocket", false):
+			_exit_rocket(v)
+			return
 		if v.is_plane and v.pos.y > 4.0:
 			# Bail out — parachute down; the empty plane is lost.
 			var bail := Vector3(v.pos.x, v.pos.y, v.pos.z)
@@ -795,6 +1048,18 @@ func _try_enter_exit() -> void:
 			vehicles.erase(v)
 			in_car = null
 			_deploy_parachute(bail)
+			return
+		if v.get("is_boat", false):
+			# A boat can only be left at a dock — step onto the planks.
+			var bd: Vector3 = world.nearest_dock(v.pos)
+			if bd.x < 1e8 and Vector2(bd.x - v.pos.x, bd.z - v.pos.z).length() < 9.0:
+				in_car = null
+				cam_dist = 6.5
+				player_pos = Vector3(bd.x, 0, bd.z)
+				player_node.visible = true
+				_show_objective("Stepped onto the dock.")
+			else:
+				_show_objective("Steer up to a dock to step off the boat.", 3.0)
 			return
 		in_car = null
 		cam_dist = 6.5
@@ -807,6 +1072,10 @@ func _try_enter_exit() -> void:
 	for v in vehicles:
 		if v.burning:
 			continue
+		if v.get("motorcade", false):
+			continue                          # the President's convoy can't be commandeered
+		if absf(v.pos.y - player_pos.y) > 40.0:
+			continue                          # can't board across a big height gap
 		var d: float = Vector2(v.pos.x - player_pos.x, v.pos.z - player_pos.z).length()
 		var max_d: float = (5.0 + v.radius) if v.is_plane else 4.0
 		if d < max_d and d < best_d:
@@ -816,9 +1085,20 @@ func _try_enter_exit() -> void:
 		in_car = best
 		cam_yaw = best.yaw + PI
 		player_node.visible = false
-		if best.get("is_heli", false):
+		if best.get("is_rocket", false):
+			cam_dist = best.get("cam_dist", 28.0)
+			if space_state == "moon":
+				space_state = "moon_ascent"
+				_show_objective("Lift off — hold W to fly home to Earth.", 6.0)
+			else:
+				space_state = "ascent"
+				_show_objective("ROCKET — hold W to launch, A/D steer. Climb to space, then the Moon.", 9.0)
+		elif best.get("is_heli", false):
 			cam_dist = best.get("cam_dist", 15.0)
 			_show_objective("Helicopter: hold Up to lift straight off and climb, Down to descend. W/S fly forward/back, A/D turn. Release everything to hover. F bails out (parachute).", 8.0)
+		elif best.get("is_boat", false):
+			cam_dist = 7.5
+			_show_objective("Boat: W/S throttle, A/D steer. Cruise the river and the bay — F to step off at a dock.", 7.0)
 		elif best.is_plane:
 			cam_dist = best.get("cam_dist", 12.0)
 			_show_objective("Plane: the engine spools up on its own - just hold Up to climb once rolling. A/D turn, W/S throttle, Down to descend. F bails out (parachute).", 8.0)
@@ -1057,13 +1337,19 @@ func _refresh_suit_model() -> void:
 	suit_node.rotation = rot
 
 
+## The Y of the surface the player stands on — the Moon when up there, else 0.
+func _ground_y() -> float:
+	return CityWorld.MOON_Y if space_state == "moon" else 0.0
+
+
 func _begin_suit() -> void:
 	_refresh_suit_model()                # wear the model of the owned tier
 	suit_state = "suiting"
 	suit_timer = 0.0
 	suit_armed = false
-	player_pos.y = 0.0
-	suit_node.position = Vector3(player_pos.x, 0.0, player_pos.z)
+	var gy := _ground_y()
+	player_pos.y = gy
+	suit_node.position = Vector3(player_pos.x, gy, player_pos.z)
 	suit_node.rotation = Vector3(0, player_yaw, 0)
 	cam_dist = 9.0
 	var pieces: Array = suit_node.get_meta("pieces")
@@ -1081,8 +1367,9 @@ func _unsuit() -> void:
 	suit_state = "none"
 	suit_armed = false
 	suit_vy = 0.0
-	player_pos.y = 0.0
-	suit_node.position = Vector3(player_pos.x, 0.0, player_pos.z)
+	var gy := _ground_y()
+	player_pos.y = gy
+	suit_node.position = Vector3(player_pos.x, gy, player_pos.z)
 	suit_node.rotation = Vector3.ZERO
 	var pieces: Array = suit_node.get_meta("pieces")
 	var rest: Array = suit_node.get_meta("rest")
@@ -1093,14 +1380,14 @@ func _unsuit() -> void:
 	player_node.position = player_pos
 	player_node.visible = true
 	cam_dist = 6.5
-	_show_objective("Suit powered down — step onto it again to suit up.", 4.0)
+	_show_objective("Suit powered down — press V to call it back, or step onto it, to suit up again.", 4.0)
 
 
 func _update_suiting(dt: float) -> void:
 	suit_timer += dt
 	var pieces: Array = suit_node.get_meta("pieces")
 	var rest: Array = suit_node.get_meta("rest")
-	suit_node.position = Vector3(player_pos.x, 0.0, player_pos.z)
+	suit_node.position = Vector3(player_pos.x, _ground_y(), player_pos.z)
 	suit_node.rotation = Vector3(0, player_yaw, 0)
 	# The body stands still, visible, while the plates clamp onto it.
 	player_node.position = player_pos
@@ -1124,19 +1411,92 @@ func _update_suiting(dt: float) -> void:
 		_show_objective("SUIT ONLINE. UP/DOWN to fly up/down (hovers when you let go), WASD to move, SHIFT boost, SPACE to zoom aim, L-click repulsors, R-click missiles. F powers down.", 10.0)
 
 
+## Call the suit from afar — every plate detaches from the parked armour and
+## flies across the map to clamp onto the player, feet-first.
+func _summon_suit() -> void:
+	if suit_node == null or suit_state != "none" or not suit_armed:
+		return
+	var origin := suit_node.position             # the parked armour's spot
+	_refresh_suit_model()                        # wear the model of the owned tier
+	origin = suit_node.position                  # _refresh rebuilds at the same spot
+	suit_state = "summoning"
+	suit_timer = 0.0
+	suit_armed = false
+	var gy := _ground_y()
+	player_pos.y = gy
+	suit_node.position = Vector3(player_pos.x, gy, player_pos.z)
+	suit_node.rotation = Vector3(0, player_yaw, 0)
+	cam_dist = 9.0
+	var pieces: Array = suit_node.get_meta("pieces")
+	# Where the armour streaks in from. On the Moon the parked suit is back on
+	# Earth, so the plates come down from just above the player instead.
+	var origin_xz := Vector3(origin.x, gy, origin.z)
+	if space_state == "moon":
+		origin_xz = Vector3(player_pos.x, gy + 40.0, player_pos.z)
+	var start: Vector3 = suit_node.to_local(origin_xz)
+	var starts: Array = []
+	for i in pieces.size():
+		var scatter := Vector3((randf() - 0.5) * 3.0, randf() * 2.5,
+			(randf() - 0.5) * 3.0)
+		starts.append(start + scatter)
+		pieces[i].scale = Vector3.ONE
+		pieces[i].visible = true
+		pieces[i].position = start + scatter
+	suit_node.set_meta("summon_starts", starts)
+	suit_full_time = pieces.size() * SUIT_SUMMON_STAGGER + SUIT_SUMMON_FLIGHT
+	_spawn_sparks(origin_xz.x, gy + 1.0, origin_xz.z, 6)
+	_show_objective("Suit inbound — armour incoming!", 3.0)
+	AudioFX.hit()
+
+
+func _update_summoning(dt: float) -> void:
+	suit_timer += dt
+	var pieces: Array = suit_node.get_meta("pieces")
+	var rest: Array = suit_node.get_meta("rest")
+	var starts: Array = suit_node.get_meta("summon_starts")
+	suit_node.position = Vector3(player_pos.x, _ground_y(), player_pos.z)
+	suit_node.rotation = Vector3(0, player_yaw, 0)
+	# The body stands ready, visible, while the armour streaks in around it.
+	player_node.position = player_pos
+	player_node.rotation.y = player_yaw
+	player_node.visible = true
+	Human.animate(player_node, walk_phase, false, 0.0, 0.0)
+	for i in pieces.size():
+		var start_t: float = i * SUIT_SUMMON_STAGGER
+		var t: float = clampf((suit_timer - start_t) / SUIT_SUMMON_FLIGHT, 0.0, 1.0)
+		var land: float = 1.0 - pow(1.0 - t, 3.0)        # ease-out: clicks home
+		var p: Vector3 = (starts[i] as Vector3).lerp(rest[i] as Vector3, land)
+		p.y += sin(land * PI) * 3.0                       # swoop up, then down on
+		pieces[i].position = p
+		# Bright streak trailing each plate still in flight.
+		if t > 0.0 and t < 1.0 and randf() < 0.7:
+			var wp: Vector3 = pieces[i].global_position
+			_spawn_particle(wp.x, wp.y, wp.z, 0x9fe9ff, 0.26,
+				(randf() - 0.5) * 1.2, (randf() - 0.5) * 1.2, (randf() - 0.5) * 1.2)
+	if suit_timer >= suit_full_time:
+		for i in pieces.size():
+			pieces[i].visible = true
+			pieces[i].position = rest[i]
+		suit_state = "on"
+		player_node.visible = false
+		_show_objective("SUIT ONLINE. UP/DOWN to fly up/down (hovers when you let go), WASD to move, SHIFT boost, SPACE to zoom aim, L-click repulsors, R-click missiles. F powers down.", 10.0)
+
+
 func _update_suit(dt: float) -> void:
 	var st := Garage.suit_stats()
 	var ascend := (1.0 if _key(KEY_UP) else 0.0) - (1.0 if _key(KEY_DOWN) else 0.0)
 	var mx := (1.0 if _key(KEY_D) else 0.0) - (1.0 if _key(KEY_A) else 0.0)
 	var mz := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
 
-	# Vertical: Up climbs, Down descends, neither holds a steady hover.
+	# Vertical: Up climbs, Down descends, neither holds a steady hover. The
+	# floor follows the surface — y=0 on Earth, MOON_Y up on the Moon.
+	var gy := _ground_y()
 	suit_vy = move_toward(suit_vy, ascend * st.fly_v, 46.0 * dt)
-	player_pos.y = clampf(player_pos.y + suit_vy * dt, 0.0, 220.0)
-	if player_pos.y <= 0.0:
-		player_pos.y = 0.0
+	player_pos.y = clampf(player_pos.y + suit_vy * dt, gy, gy + 220.0)
+	if player_pos.y <= gy:
+		player_pos.y = gy
 		suit_vy = maxf(suit_vy, 0.0)
-	var airborne: bool = player_pos.y > 0.7
+	var airborne: bool = player_pos.y > gy + 0.7
 
 	# Horizontal travel — relative to where the camera is looking.
 	var l := sqrt(mx * mx + mz * mz)
@@ -1150,10 +1510,15 @@ func _update_suit(dt: float) -> void:
 			spd *= 1.7
 		var dx := (rgt.x * mx + fwd.x * mz) * spd * dt
 		var dz := (rgt.z * mx + fwd.z * mz) * spd * dt
-		if not world.collides_at(player_pos.x + dx, player_pos.z, 0.6, player_pos.y):
+		if space_state == "moon":
+			# The lunar surface is open — no city collision up here.
 			player_pos.x += dx
-		if not world.collides_at(player_pos.x, player_pos.z + dz, 0.6, player_pos.y):
 			player_pos.z += dz
+		else:
+			if not world.collides_at(player_pos.x + dx, player_pos.z, 0.6, player_pos.y):
+				player_pos.x += dx
+			if not world.collides_at(player_pos.x, player_pos.z + dz, 0.6, player_pos.y):
+				player_pos.z += dz
 		player_yaw = atan2(dx, dz)
 
 	suit_node.position = player_pos
@@ -1657,6 +2022,14 @@ func _update_cops(dt: float) -> void:
 
 
 func _update_wanted(dt: float) -> void:
+	# Once the city is owned the police permanently stand down.
+	if city_owned:
+		GameState.wanted = 0.0
+		if not cops.is_empty():
+			for c in cops:
+				c.node.queue_free()
+			cops.clear()
+		return
 	if GameState.wanted >= 1.0:
 		cop_timer -= dt
 		if cop_timer <= 0.0:
@@ -1683,6 +2056,8 @@ func _update_wanted(dt: float) -> void:
 
 
 func _raise_wanted(amt: float) -> void:
+	if city_owned:
+		return                                # the city is yours — no heat
 	if GameState.wanted == 0.0:
 		cop_timer = 5.0
 	wanted_decay = 0.0
@@ -1745,6 +2120,9 @@ func _update_vips(dt: float) -> void:
 	var keep: Array = []
 	for v in vips:
 		if v.hp <= 0.0:
+			if v.get("is_president", false):
+				_kill_president(v)
+				continue
 			_spawn_blood(v.pos.x, 1.2, v.pos.z, 22)
 			_spawn_pickup(v.pos.x, v.pos.z, v.cash)
 			_raise_wanted(3.0)
@@ -1754,6 +2132,9 @@ func _update_vips(dt: float) -> void:
 				g.vip = null
 			v.node.queue_free()
 			continue
+		if v.get("is_president", false):
+			keep.append(v)
+			continue                          # the motorcade system drives the President
 		if v.hp < v.max_hp:
 			v.aggro = true
 		var spd := 1.7
@@ -1802,6 +2183,9 @@ func _update_guards(dt: float) -> void:
 			_raise_wanted(0.6)
 			g.node.queue_free()
 			continue
+		if g.get("motorcade", false):
+			keep.append(g)
+			continue                          # the motorcade system drives its guards
 		if g.hp < g.max_hp:
 			g.aggro = true
 			if g.vip != null:
@@ -1936,15 +2320,332 @@ func _update_pickups(dt: float) -> void:
 # =====================================================================
 # Vehicle construction
 # =====================================================================
+# ---------------- AI race cars ----------------
+## Spawn the field of AI racers that loop the F1 circuit on the racing line.
+func _spawn_racers() -> void:
+	for r in racers:
+		r.node.queue_free()
+	racers.clear()
+	if world.track == null:
+		return
+	var n: int = world.track.baked.size()
+	var cols := [0x3a6ea5, 0x46a35a, 0xd9a441, 0x8e44ad, 0x2aa39a]
+	for i in cols.size():
+		var node := CarMesh.build(cols[i], "f1")
+		add_child(node)
+		racers.append({
+			"node": node,
+			"fi": float(((i + 1) * 7) % n),
+			"speed": 40.0, "lap": 0, "prog": 0.0,
+			"offset": (float(i) - 2.0) * 2.7,
+			"skill": 88.0 + i * 4.0,
+		})
+
+
+## Rail-follow the AI racers along the baked centreline and rank the player.
+func _update_racers(dt: float) -> void:
+	var t: Track = world.track
+	if t == null or racers.is_empty():
+		return
+	var n: int = t.baked.size()
+	# The player's monotonic race progress — distance covered since the grid,
+	# measured in centreline steps. Robust across the start/finish line.
+	if RaceManager.state == "racing" and in_car != null:
+		_player_prog += maxf(0.0, in_car.speed) * dt / Track.SAMPLE
+	var rank := 1
+	for r in racers:
+		# Frozen on the grid during the countdown; racing otherwise.
+		if RaceManager.state != "countdown":
+			var ahead: int = int(r.fi + 7.0) % n
+			var corner: float = t._corner_amount(ahead)
+			var target: float = lerpf(r.skill, 20.0, clampf(corner, 0.0, 1.0))
+			r.speed = move_toward(r.speed, target, 26.0 * dt)
+			r.fi += r.speed * dt / Track.SAMPLE
+			if r.fi >= n:
+				r.fi -= n
+				r.lap += 1
+			if RaceManager.state == "racing":
+				r.prog += r.speed * dt / Track.SAMPLE
+		var i0: int = int(r.fi) % n
+		var i1: int = (i0 + 1) % n
+		var frac: float = r.fi - floor(r.fi)
+		var base: Vector3 = t.baked[i0].lerp(t.baked[i1], frac)
+		var rt: Vector3 = t.rights[i0]
+		r.node.position = Vector3(base.x + rt.x * r.offset, 0.0,
+			base.z + rt.z * r.offset)
+		r.node.rotation.y = atan2(t.forwards[i0].x, t.forwards[i0].z)
+		if r.prog > _player_prog:
+			rank += 1
+	race_rank = rank
+	race_total = racers.size() + 1
+
+
 func _make_vehicle(x: float, z: float, color: int, style := "sedan") -> Dictionary:
 	var g := CarMesh.build(color, style, false, head_mat, tail_mat)
 	g.position = Vector3(x, 0, z)
 	add_child(g)
 	return {
 		"node": g, "pos": Vector3(x, 0, z), "yaw": randf() * TAU, "speed": 0.0,
-		"max_speed": 28.0, "hp": 100.0, "max_hp": 100.0,
+		"max_speed": 28.0, "hp": 100.0, "max_hp": 100.0, "style": style,
 		"burning": false, "burn_timer": 0.0, "is_plane": false, "propeller": null,
 	}
+
+
+# ======================================================================
+# Space programme — rocket, Moon trip, re-entry
+# ======================================================================
+## A low-poly rocket. The booster is its own node so it can detach in flight.
+## `pos` is the upper stage's base; the booster hangs ROCKET_BOOSTER_H below.
+func _make_rocket(x: float, z: float) -> Dictionary:
+	var white := Build.mat(Build.hex(0xeef0f2), 0.4, 0.2)
+	var dark := Build.mat(Build.hex(0x2a2d33), 0.5, 0.3)
+	var accent := Build.mat(Build.hex(0xc23a3a), 0.4)
+	var metal := Build.mat(Build.hex(0x9a9ca0), 0.3, 0.7)
+	var glass := Build.mat(Build.hex(0x141d28), 0.1, 0.4)
+	var flame := Build.emissive(Build.hex(0xffb030), Build.hex(0xff8020), 3.0)
+
+	# Booster (lower stage).
+	var booster := Node3D.new()
+	var b_body := Build.cyl(2.4, 2.6, ROCKET_BOOSTER_H, 16, white)
+	b_body.position = Vector3(0, ROCKET_BOOSTER_H / 2.0, 0)
+	booster.add_child(b_body)
+	var b_stripe := Build.cyl(2.64, 2.64, 2.0, 16, accent)
+	b_stripe.position = Vector3(0, 3.2, 0)
+	booster.add_child(b_stripe)
+	for fi in 4:
+		var fa := fi * PI / 2.0
+		var fin := Build.box(0.4, 4.6, 3.0, dark)
+		fin.position = Vector3(cos(fa) * 2.7, 2.4, sin(fa) * 2.7)
+		fin.rotation.y = fa
+		booster.add_child(fin)
+	var bell := Build.cyl(1.5, 2.3, 2.6, 14, metal)
+	bell.position = Vector3(0, -0.9, 0)
+	booster.add_child(bell)
+	add_child(booster)
+
+	# Upper stage — the vehicle node. Origin at its base.
+	var g := Node3D.new()
+	var u_body := Build.cyl(2.0, 2.4, 10.0, 16, white)
+	u_body.position = Vector3(0, 5.0, 0)
+	g.add_child(u_body)
+	var nose := Build.cyl(0.16, 2.0, 4.6, 16, white)
+	nose.position = Vector3(0, 12.3, 0)
+	g.add_child(nose)
+	var u_stripe := Build.cyl(2.44, 2.44, 1.4, 16, accent)
+	u_stripe.position = Vector3(0, 8.8, 0)
+	g.add_child(u_stripe)
+	for wi in 3:
+		var wa := wi * TAU / 3.0
+		var win := Build.box(0.2, 0.7, 0.7, glass)
+		win.position = Vector3(cos(wa) * 2.06, 9.6, sin(wa) * 2.06)
+		win.rotation.y = wa
+		g.add_child(win)
+	var plume := Build.sphere(1.7, flame)
+	plume.position = Vector3(0, -1.2, 0)
+	plume.visible = false
+	g.add_child(plume)
+	add_child(g)
+
+	var base_y := ROCKET_BASE_Y + ROCKET_BOOSTER_H
+	g.position = Vector3(x, base_y, z)
+	booster.position = Vector3(x, ROCKET_BASE_Y, z)
+
+	return {
+		"node": g, "booster": booster, "plume": plume,
+		"pos": Vector3(x, base_y, z), "yaw": 0.0, "speed": 0.0, "throttle": 0.0,
+		"tilt": 0.0, "max_speed": 135.0, "max_alt": 9000.0,
+		"hp": 9999.0, "max_hp": 9999.0, "burning": false, "burn_timer": 0.0,
+		"is_plane": true, "is_rocket": true, "on_ground": true, "separated": false,
+		"radius": 3.2, "cam_dist": 28.0,
+	}
+
+
+func _spawn_rocket() -> void:
+	vehicles.append(_make_rocket(CityWorld.LAUNCH.x, CityWorld.LAUNCH.z))
+
+
+## The Y the rocket's base rests on, by trip leg. The booster only adds height
+## while it is still attached (the launch); once dropped, the upper stage sits
+## on its own base.
+func _rocket_floor() -> float:
+	match space_state:
+		"moon_descent", "moon_landed", "moon", "moon_ascent":
+			return CityWorld.MOON_Y
+		"splashdown":
+			return 1.0
+		"reentry":
+			return -100000.0
+		_:
+			return ROCKET_BASE_Y + ROCKET_BOOSTER_H
+
+
+## True while the dark space sky is showing (day/night tinting is suspended).
+func _in_space_sky() -> bool:
+	return space_state in ["space_climb", "space", "moon_descent", "moon_landed",
+		"moon", "moon_ascent"]
+
+
+func _set_space_sky(on: bool) -> void:
+	if on:
+		env.background_mode = Environment.BG_COLOR
+		env.background_color = Color(0.015, 0.02, 0.045)
+		env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		env.ambient_light_color = Color(0.55, 0.55, 0.62)
+		env.ambient_light_energy = 0.55
+		env.fog_enabled = false
+	else:
+		env.background_mode = Environment.BG_SKY
+		env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+		env.fog_enabled = true
+
+
+func _update_rocket(v: Dictionary, dt: float) -> void:
+	var scripted: bool = space_state == "moon_descent" or space_state == "reentry"
+	var thrust := 1.0 if (_key(KEY_W) or _key(KEY_UP)) else 0.0
+	var brake := 1.0 if (_key(KEY_S) or _key(KEY_DOWN)) else 0.0
+	var turn := (1.0 if _key(KEY_A) else 0.0) - (1.0 if _key(KEY_D) else 0.0)
+
+	if scripted:
+		var desc := -26.0 if space_state == "moon_descent" else -82.0
+		v.speed = move_toward(v.speed, desc, 70.0 * dt)
+	else:
+		v.throttle = move_toward(v.throttle, thrust, 1.3 * dt)
+		var target: float = v.throttle * v.max_speed - brake * 45.0
+		v.speed = move_toward(v.speed, target, v.max_speed * 0.5 * dt)
+	v.plume.visible = v.speed > 2.0 or v.throttle > 0.12
+
+	v.pos.y += v.speed * dt
+	var floor_y := _rocket_floor()
+	if v.pos.y <= floor_y:
+		v.pos.y = floor_y
+		v.speed = maxf(v.speed, 0.0)
+		v.on_ground = true
+	else:
+		v.on_ground = false
+
+	if not scripted:
+		v.yaw += turn * 0.55 * dt
+		v.tilt = lerpf(v.tilt, turn * 0.13, dt * 3.0)
+		if v.pos.y > floor_y + 1.0:
+			v.pos.x += sin(v.yaw) * v.tilt * 26.0 * dt
+			v.pos.z += cos(v.yaw) * v.tilt * 26.0 * dt
+	else:
+		v.tilt = lerpf(v.tilt, 0.0, dt * 2.0)
+
+	v.node.position = v.pos
+	v.node.rotation = Vector3(v.tilt, v.yaw, 0.0)
+	if not v.separated:
+		v.booster.position = v.pos - Vector3(0, ROCKET_BOOSTER_H, 0)
+		v.booster.rotation = v.node.rotation
+	player_pos = v.pos
+	_space_tick(v, dt)
+
+
+## The state machine that drives the whole journey off altitude triggers.
+func _space_tick(v: Dictionary, dt: float) -> void:
+	match space_state:
+		"ascent":
+			if v.pos.y > 520.0 and not v.separated:
+				_separate_booster(v)
+			if v.pos.y > 1500.0:
+				space_state = "space_climb"
+				_set_space_sky(true)
+				_show_objective("ENTERING SPACE — keep climbing for the Moon.", 5.0)
+		"space_climb", "space":
+			space_state = "space"
+			if v.pos.y > 3000.0:
+				space_state = "moon_descent"
+				v.pos = Vector3(CityWorld.MOON_PAD.x,
+					CityWorld.MOON_Y + 280.0, CityWorld.MOON_PAD.z)
+				v.speed = -12.0
+				v.yaw = 0.0
+				_show_objective("APPROACHING THE MOON", 4.0)
+		"moon_descent":
+			if v.pos.y <= CityWorld.MOON_Y + 0.6:
+				space_state = "moon_landed"
+				_show_objective("TOUCHDOWN ON THE MOON — press F to step out.", 9.0)
+		"moon_ascent":
+			if v.pos.y > CityWorld.MOON_Y + 900.0:
+				space_state = "reentry"
+				v.pos = Vector3(40.0, 2400.0, CityWorld.WORLD_HALF + 220.0)
+				v.speed = -45.0
+				v.yaw = 0.0
+				_set_space_sky(false)
+				_show_objective("RE-ENTRY — the heat shield is glowing.", 5.0)
+		"reentry":
+			_spawn_fire(v.pos.x + randf() * 5.0 - 2.5, v.pos.y - 7.0,
+				v.pos.z + randf() * 5.0 - 2.5, 3)
+			if v.pos.y <= 34.0:
+				space_state = "splashdown"
+				_show_objective("SPLASHDOWN — press F for the recovery crew.", 10.0)
+
+
+func _separate_booster(v: Dictionary) -> void:
+	v.separated = true
+	_falling_boosters.append({
+		"node": v.booster, "vy": -3.0,
+		"spin": Vector3(randf() - 0.5, 0.0, randf() - 0.5) * 1.2,
+	})
+	_show_objective("BOOSTER SEPARATION", 4.0)
+
+
+func _update_falling_boosters(dt: float) -> void:
+	var keep: Array = []
+	for b in _falling_boosters:
+		if not is_instance_valid(b.node):
+			continue
+		b.vy -= 18.0 * dt
+		b.node.position.y += b.vy * dt
+		b.node.rotation += b.spin * dt
+		if b.node.position.y < -60.0:
+			b.node.queue_free()
+		else:
+			keep.append(b)
+	_falling_boosters = keep
+
+
+## Step out of the rocket — only allowed on the Moon or after splashdown.
+func _exit_rocket(v: Dictionary) -> void:
+	match space_state:
+		"ascent":
+			# Still parked on the pad — let the player change their mind.
+			if v.pos.y < ROCKET_BASE_Y + ROCKET_BOOSTER_H + 4.0:
+				space_state = ""
+				in_car = null
+				cam_dist = 6.5
+				player_pos = Vector3(v.pos.x + 8.0, 0, v.pos.z)
+				player_node.visible = true
+				_show_objective("Stepped off the rocket.")
+			else:
+				_show_objective("You can't leave the rocket mid-flight.", 3.0)
+		"moon_landed":
+			space_state = "moon"
+			in_car = null
+			cam_dist = 6.5
+			player_pos = Vector3(v.pos.x + 7.0, CityWorld.MOON_Y, v.pos.z)
+			player_node.visible = true
+			_show_objective("On the Moon. Low gravity — walk around. "
+				+ "Board the rocket again to fly home.", 9.0)
+		"splashdown":
+			in_car = null
+			cam_dist = 6.5
+			var dock: Vector3 = world.nearest_dock(v.pos)
+			if dock.x < 1e8:
+				player_pos = Vector3(dock.x, 0, dock.z)
+			else:
+				player_pos = Vector3(0, 0, CityWorld.WORLD_HALF - 12.0)
+			player_node.visible = true
+			v.node.queue_free()
+			if is_instance_valid(v.booster):
+				v.booster.queue_free()
+			vehicles.erase(v)
+			space_state = ""
+			_set_space_sky(false)
+			_spawn_rocket()
+			_show_objective("The recovery crew brought you ashore. "
+				+ "A fresh rocket waits at the pad.", 8.0)
+		_:
+			_show_objective("You can't leave the rocket mid-flight.", 3.0)
 
 
 func _make_plane(x: float, z: float, yaw: float, scale := 1.0) -> Dictionary:
@@ -1960,54 +2661,76 @@ func _make_plane(x: float, z: float, yaw: float, scale := 1.0) -> Dictionary:
 	glass_m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	glass_m.albedo_color.a = 0.7
 
-	var fy := 2.0
-	var fus := Build.box(1.8, 2.0, 11.0, body_m)
+	var fy := 2.3
+
+	# Fuselage — a long round tube laid along +Z.
+	var fus := Build.cyl(1.05, 1.05, 12.6, 14, body_m)
+	fus.rotation.x = PI / 2.0
 	fus.position = Vector3(0, fy, 0)
 	g.add_child(fus)
-	var nose := Build.cyl(0.12, 0.95, 2.6, 12, body_m)
-	nose.rotation.x = -PI / 2.0
-	nose.position = Vector3(0, fy, 6.6)
+	# Nose cone — its point faces +Z (forward).
+	var nose := Build.cyl(0.14, 1.05, 3.4, 14, body_m)
+	nose.rotation.x = PI / 2.0
+	nose.position = Vector3(0, fy, 7.9)
 	g.add_child(nose)
-	var tcone := Build.cyl(0.12, 0.95, 3.0, 12, body_m)
-	tcone.rotation.x = PI / 2.0
-	tcone.position = Vector3(0, fy + 0.5, -6.7)
+	# Tail cone — tapers up to a point at the back (-Z).
+	var tcone := Build.cyl(0.16, 1.05, 4.2, 14, body_m)
+	tcone.rotation.x = -PI / 2.0
+	tcone.position = Vector3(0, fy + 0.45, -8.2)
 	g.add_child(tcone)
-	var cockpit := Build.box(1.5, 0.7, 1.8, glass_m)
-	cockpit.position = Vector3(0, fy + 0.7, 4.6)
+	# Cockpit canopy near the nose.
+	var cockpit := Build.box(1.45, 0.7, 2.4, glass_m)
+	cockpit.position = Vector3(0, fy + 0.82, 4.7)
 	g.add_child(cockpit)
-	for wi in 8:
-		var wz := 3.2 - wi * 0.85
-		for sx in [-0.96, 0.96]:
-			var win := Build.box(0.1, 0.32, 0.42, win_m)
-			win.position = Vector3(sx, fy + 0.35, wz)
+	# A red cheatline stripe down each side, airliner-style.
+	for sx0 in [-1.0, 1.0]:
+		var stripe := Build.box(0.1, 0.42, 11.5, accent_m)
+		stripe.position = Vector3(sx0 * 1.04, fy + 0.18, -0.4)
+		g.add_child(stripe)
+	# Cabin window row.
+	for wi in 11:
+		var wz := 3.6 - wi * 0.78
+		for sx in [-1.03, 1.03]:
+			var win := Build.box(0.1, 0.3, 0.4, win_m)
+			win.position = Vector3(sx, fy + 0.5, wz)
 			g.add_child(win)
+
+	# Wings — long, flat, gently swept, mounted low on the fuselage.
 	for side in [-1.0, 1.0]:
-		var wing := Build.box(7.4, 0.3, 2.8, body_m)
-		wing.position = Vector3(side * 4.4, fy - 0.55, -0.4)
-		wing.rotation.y = side * 0.34
+		var wing := Build.box(8.8, 0.4, 3.5, body_m)
+		wing.position = Vector3(side * 5.4, fy - 0.55, -0.3)
+		wing.rotation.y = side * 0.2
 		g.add_child(wing)
-		var wl := Build.box(0.3, 1.5, 1.3, accent_m)
-		wl.position = Vector3(side * 8.0, fy + 0.05, -1.7)
-		wl.rotation.z = side * 0.5
+		var wl := Build.box(0.34, 1.05, 1.0, body_m)
+		wl.position = Vector3(side * 9.6, fy - 0.05, -1.4)
+		wl.rotation.z = side * 0.4
 		g.add_child(wl)
-		var eng := Build.cyl(0.62, 0.7, 2.8, 12, dark_m)
+		var eng := Build.cyl(0.64, 0.7, 3.2, 12, dark_m)
 		eng.rotation.x = PI / 2.0
-		eng.position = Vector3(side * 3.6, fy - 1.15, 0.4)
+		eng.position = Vector3(side * 4.4, fy - 1.3, 0.5)
 		g.add_child(eng)
-	var fin := Build.box(0.34, 3.4, 2.6, body_m)
-	fin.position = Vector3(0, fy + 2.5, -5.6)
+		var intake := Build.cyl(0.66, 0.66, 0.3, 12, metal_m)
+		intake.rotation.x = PI / 2.0
+		intake.position = Vector3(side * 4.4, fy - 1.3, 2.15)
+		g.add_child(intake)
+
+	# Tail — one vertical fin and two horizontal stabilisers.
+	var fin := Build.box(0.4, 3.9, 3.0, body_m)
+	fin.position = Vector3(0, fy + 2.45, -6.7)
 	g.add_child(fin)
-	var fin_acc := Build.box(0.36, 2.0, 1.4, accent_m)
-	fin_acc.position = Vector3(0, fy + 3.1, -6.0)
+	var fin_acc := Build.box(0.44, 3.0, 1.1, accent_m)
+	fin_acc.position = Vector3(0, fy + 2.7, -7.7)
 	g.add_child(fin_acc)
 	for side in [-1.0, 1.0]:
-		var stab := Build.box(3.4, 0.24, 1.6, body_m)
-		stab.position = Vector3(side * 1.9, fy + 1.0, -6.0)
-		stab.rotation.y = side * 0.3
+		var stab := Build.box(4.6, 0.3, 1.9, body_m)
+		stab.position = Vector3(side * 2.5, fy + 0.6, -7.4)
+		stab.rotation.y = side * 0.16
 		g.add_child(stab)
-	for gear in [Vector3(0, 0, 4.6), Vector3(-2.0, 0, -0.6), Vector3(2.0, 0, -0.6)]:
-		var strut := Build.cyl(0.12, 0.12, 1.2, 6, metal_m)
-		strut.position = Vector3(gear.x, fy - 1.6, gear.z)
+
+	# Tricycle landing gear.
+	for gear in [Vector3(0, 0, 5.4), Vector3(-2.3, 0, -0.4), Vector3(2.3, 0, -0.4)]:
+		var strut := Build.cyl(0.13, 0.13, 1.7, 6, metal_m)
+		strut.position = Vector3(gear.x, fy - 1.85, gear.z)
 		g.add_child(strut)
 		var wheel := Build.cyl(0.42, 0.42, 0.34, 12, dark_m)
 		wheel.rotation.z = PI / 2.0
@@ -2027,6 +2750,513 @@ func _make_plane(x: float, z: float, yaw: float, scale := 1.0) -> Dictionary:
 		"is_plane": true, "on_ground": true, "propeller": null,
 		"radius": 2.6 * scale, "cam_dist": clampf(13.0 * scale, 13.0, 24.0),
 	}
+
+
+# =====================================================================
+# Boats
+# =====================================================================
+## A small open speedboat — nose points +Z.
+func _make_boat(x: float, z: float, yaw: float) -> Dictionary:
+	var g := Node3D.new()
+	var hull_c: int = [0xe8e8e8, 0xcf3a3a, 0x2f6fb0, 0xf0c020][randi() % 4]
+	var hull_m := Build.mat(Build.hex(hull_c), 0.5, 0.2)
+	var deck_m := Build.mat(Build.hex(0xc9a878), 0.8)
+	var trim_m := Build.mat(Build.hex(0x26262c), 0.4, 0.4)
+	var glass_m := Build.mat(Build.hex(0x9fc4d8), 0.15, 0.4)
+	var hull := Build.box(2.8, 1.0, 8.4, hull_m)
+	hull.position.y = 0.5
+	g.add_child(hull)
+	var bow := Build.box(2.6, 0.95, 1.6, hull_m)
+	bow.position = Vector3(0, 0.55, 4.6)
+	bow.rotation.x = -0.4
+	g.add_child(bow)
+	var deck := Build.box(2.4, 0.12, 7.4, deck_m)
+	deck.position = Vector3(0, 1.05, 0.2)
+	g.add_child(deck)
+	var rail := Build.box(2.95, 0.22, 8.5, trim_m)
+	rail.position = Vector3(0, 1.0, 0.0)
+	g.add_child(rail)
+	var cabin := Build.box(2.0, 0.7, 1.8, trim_m)
+	cabin.position = Vector3(0, 1.5, 1.5)
+	g.add_child(cabin)
+	var shield := Build.box(1.9, 0.7, 0.12, glass_m)
+	shield.position = Vector3(0, 1.62, 2.4)
+	shield.rotation.x = 0.5
+	g.add_child(shield)
+	for sz in [-1.7, -0.3]:
+		var seat := Build.box(1.8, 0.4, 0.8, trim_m)
+		seat.position = Vector3(0, 1.34, sz)
+		g.add_child(seat)
+	var motor := Build.box(0.7, 1.05, 0.7, trim_m)
+	motor.position = Vector3(0, 0.95, -4.6)
+	g.add_child(motor)
+	g.position = Vector3(x, 0.35, z)
+	g.rotation.y = yaw
+	add_child(g)
+	return {
+		"node": g, "pos": Vector3(x, 0.35, z), "yaw": yaw, "speed": 0.0,
+		"max_speed": 26.0, "hp": 150.0, "max_hp": 150.0, "style": "boat",
+		"burning": false, "burn_timer": 0.0, "is_plane": false, "is_boat": true,
+		"bob": randf() * TAU,
+	}
+
+
+## Moor a boat at every dock the world laid out.
+func _spawn_boats() -> void:
+	for d in world.docks:
+		var b: Vector3 = d.board
+		var dir: Vector2 = d.dir
+		var bx: float = b.x + dir.x * 3.2
+		var bz: float = b.z + dir.y * 3.2
+		var yaw: float = 0.0 if absf(dir.x) > absf(dir.y) else PI / 2.0
+		vehicles.append(_make_boat(bx, bz, yaw))
+
+
+func _update_boat(v: Dictionary, dt: float) -> void:
+	var accel := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
+	var turn := (1.0 if _key(KEY_A) else 0.0) - (1.0 if _key(KEY_D) else 0.0)
+	v.speed += accel * v.max_speed * 0.5 * dt
+	v.speed *= 1.0 - dt * 0.7
+	v.speed = clampf(v.speed, -v.max_speed * 0.4, v.max_speed)
+	if absf(v.speed) > 0.6:
+		var sgn := 1.0 if v.speed > 0.0 else -1.0
+		v.yaw += turn * 1.1 * dt * sgn * minf(1.0, absf(v.speed) / 5.0)
+	var dx: float = sin(v.yaw) * v.speed * dt
+	var dz: float = cos(v.yaw) * v.speed * dt
+	# Boats glide on water and bump back off the shoreline.
+	if world.on_water(v.pos.x + dx, v.pos.z):
+		v.pos.x += dx
+	else:
+		v.speed *= -0.25
+	if world.on_water(v.pos.x, v.pos.z + dz):
+		v.pos.z += dz
+	else:
+		v.speed *= -0.25
+	v.bob += dt * 2.4
+	v.node.position = Vector3(v.pos.x, 0.35 + sin(v.bob) * 0.07, v.pos.z)
+	v.node.rotation.y = v.yaw
+	v.node.rotation.z = sin(v.bob) * 0.045
+	v.node.rotation.x = -clampf(v.speed * 0.012, -0.12, 0.12)
+	if absf(v.speed) > 4.0 and randf() < 0.7:
+		_spawn_particle(v.pos.x - sin(v.yaw) * 3.0, 0.3, v.pos.z - cos(v.yaw) * 3.0,
+			0xcfe6ef, 0.5, (randf() - 0.5) * 1.6, 0.5, (randf() - 0.5) * 1.6)
+	if absf(v.speed) > 1.0 and randf() < 0.1:
+		AudioFX.engine()
+	player_pos = Vector3(v.pos.x, 0.0, v.pos.z)
+	if v.hp <= 0.0 and not v.burning:
+		v.burning = true
+		v.burn_timer = 2.0
+	if v.burning:
+		v.burn_timer -= dt
+		_spawn_fire(v.pos.x, 0.4, v.pos.z, 2)
+		if v.burn_timer <= 0.0:
+			var mine: bool = in_car == v
+			_explode(v.pos.x, 1.0, v.pos.z)
+			v.node.queue_free()
+			vehicles.erase(v)
+			if mine:
+				in_car = null
+				var bd: Vector3 = world.nearest_dock(v.pos)
+				if bd.x < 1e8:
+					player_pos = Vector3(bd.x, 0, bd.z)
+				player_hp -= 25.0
+				player_node.visible = true
+
+
+# =====================================================================
+# President motorcade
+# =====================================================================
+## Lay out the motorcade route — the residence gate, down the road, across the
+## causeway, to the airport forecourt.
+func _build_convoy_route() -> void:
+	var pts := [
+		Vector2(-28.0, 320.0),    # the mansion driveway
+		Vector2(-28.0, 340.0),    # onto the estate's main drive
+		Vector2(18.0, 340.0),     # through the estate gate
+		Vector2(50.0, 340.0),     # across the causeway onto the airport
+		Vector2(CityWorld.AIRPORT.x, CityWorld.AIRPORT.z + 26.0),  # airport forecourt
+	]
+	convoy_route = PackedVector3Array()
+	for p in pts:
+		convoy_route.append(Vector3(p.x, 0.0, p.y))
+	_convoy_route_len = 0.0
+	for i in range(convoy_route.size() - 1):
+		_convoy_route_len += convoy_route[i].distance_to(convoy_route[i + 1])
+
+
+## Position + heading at distance `d` along the motorcade route.
+func _sample_route(d: float) -> Dictionary:
+	if convoy_route.size() < 2:
+		return {"pos": Vector3.ZERO, "yaw": 0.0}
+	d = clampf(d, 0.0, _convoy_route_len)
+	var acc := 0.0
+	for i in range(convoy_route.size() - 1):
+		var a: Vector3 = convoy_route[i]
+		var b: Vector3 = convoy_route[i + 1]
+		var seg := a.distance_to(b)
+		if d <= acc + seg or i == convoy_route.size() - 2:
+			var t: float = 0.0 if seg < 0.01 else clampf((d - acc) / seg, 0.0, 1.0)
+			var dir := b - a
+			return {"pos": a.lerp(b, t), "yaw": atan2(dir.x, dir.z)}
+		acc += seg
+	return {"pos": convoy_route[0], "yaw": 0.0}
+
+
+func _make_motorcade_vehicle(pos: Vector3, yaw: float, is_limo: bool) -> Dictionary:
+	var node := CarMesh.build(0x0a0a10, "sedan" if is_limo else "suv", false,
+		head_mat, tail_mat)
+	if is_limo:
+		node.scale = Vector3(1.05, 1.05, 1.7)
+	node.position = pos
+	node.rotation.y = yaw
+	add_child(node)
+	return {
+		"node": node, "pos": pos, "yaw": yaw, "speed": 0.0, "max_speed": 30.0,
+		"hp": 280.0 if is_limo else 150.0, "max_hp": 280.0 if is_limo else 150.0,
+		"style": "sedan", "burning": false, "burn_timer": 0.0, "is_plane": false,
+		"motorcade": true, "is_limo": is_limo,
+	}
+
+
+## Spawn the President, his bodyguards and the convoy at the residence.
+func _begin_motorcade() -> void:
+	pres_aggro = false
+	convoy_prog = 0.0
+	var start := _sample_route(0.0)
+	vehicles.append(_make_motorcade_vehicle(start.pos, start.yaw, true))
+	for k in 3:
+		vehicles.append(_make_motorcade_vehicle(start.pos, start.yaw, false))
+	var pnode := Human.build(0xe7c7a0, 0x1b2740, 0x141d2e, 0x3a3a3a)
+	pnode.scale = Vector3(1.08, 1.08, 1.08)
+	add_child(pnode)
+	president = {
+		"node": pnode, "pos": start.pos, "yaw": start.yaw,
+		"hp": 240.0, "max_hp": 240.0, "cash": 0, "is_president": true,
+		"walk_phase": 0.0, "guards": [],
+	}
+	vips.append(president)
+	for gi in 6:
+		var gnode := Human.build(0xd9a878, 0x14141a, 0x101014, 0x101010, 0x101014)
+		add_child(gnode)
+		var glimbs: Dictionary = gnode.get_meta("limbs")
+		var gholder := Node3D.new()
+		gholder.position = Vector3(0.0, -0.86, 0.18)
+		glimbs.armR.add_child(gholder)
+		gholder.add_child(_weapon_model(2))
+		guards.append({
+			"node": gnode, "pos": start.pos, "yaw": start.yaw,
+			"hp": 120.0, "max_hp": 120.0, "walk_phase": randf() * TAU,
+			"last_shot": 0.0, "motorcade": true, "vip": president, "aggro": false,
+			"slot": gi,
+		})
+	pres_state = "toairport"
+	_show_objective("The President's motorcade has rolled out of the residence, bound for the airport. Take him down to seize the city.", 7.0)
+
+
+func _update_president(dt: float) -> void:
+	if pres_state == "home":
+		pres_timer -= dt
+		if pres_timer <= 0.0:
+			_begin_motorcade()
+		return
+	# The President was assassinated mid-run — tear the motorcade down.
+	if president == null:
+		_end_motorcade()
+		return
+	var stopped := pres_state == "atairport" or pres_state == "athome"
+	match pres_state:
+		"toairport":
+			convoy_prog = minf(_convoy_route_len, convoy_prog + CONVOY_SPEED * dt)
+			if convoy_prog >= _convoy_route_len:
+				pres_state = "atairport"
+				pres_timer = 9.0
+				_show_objective("The President has stepped out at the airport.", 4.0)
+		"atairport":
+			pres_timer -= dt
+			if pres_timer <= 0.0:
+				pres_state = "tohome"
+		"tohome":
+			convoy_prog = maxf(0.0, convoy_prog - CONVOY_SPEED * dt)
+			if convoy_prog <= 0.0:
+				pres_state = "athome"
+				pres_timer = 6.0
+		"athome":
+			pres_timer -= dt
+			if pres_timer <= 0.0:
+				_end_motorcade()
+				return
+	# Place the convoy along the route — limo leading, escorts trailing.
+	var limo = null
+	var escorts: Array = []
+	for v in vehicles:
+		if v.get("motorcade", false):
+			if v.get("is_limo", false):
+				limo = v
+			else:
+				escorts.append(v)
+	var ordered: Array = ([limo] if limo != null else []) + escorts
+	for i in ordered.size():
+		var mv = ordered[i]
+		var s := _sample_route(convoy_prog - i * CONVOY_SPACING)
+		mv.pos = s.pos
+		mv.yaw = s.yaw
+		mv.node.position = s.pos
+		mv.node.rotation.y = s.yaw
+	var anchor: Vector3 = limo.pos if limo != null else president.pos
+	var ayaw: float = limo.yaw if limo != null else president.yaw
+	# The President rides the limo, and steps out beside it whenever it stops.
+	if stopped and limo != null:
+		var side := Vector3(cos(ayaw), 0.0, -sin(ayaw))
+		president.pos = anchor + side * 3.2
+		president.node.position = Vector3(president.pos.x, 0.0, president.pos.z)
+	else:
+		president.pos = anchor
+		president.node.position = Vector3(anchor.x, 0.95, anchor.z)
+	president.yaw = ayaw
+	president.node.rotation.y = ayaw
+	president.walk_phase += dt * 4.0
+	Human.animate(president.node, president.walk_phase, false, 0.0, 0.0)
+	# The detail turns hostile the instant the President is hit.
+	if president.hp < president.max_hp and not pres_aggro:
+		pres_aggro = true
+		if not city_owned:
+			GameState.wanted = 5.0
+			wanted_decay = 0.0
+		_show_objective("Shots fired at the President! His entire detail is on you.", 5.0)
+	# Bodyguards ring the motorcade and return fire when provoked.
+	for g in guards:
+		if not g.get("motorcade", false):
+			continue
+		var ctr: Vector3 = president.pos if stopped else anchor
+		var ga := float(g.slot) / 6.0 * TAU
+		g.pos = Vector3(ctr.x + cos(ga) * 3.0, 0.0, ctr.z + sin(ga) * 3.0)
+		g.node.position = g.pos
+		if pres_aggro:
+			g.yaw = atan2(player_pos.x - g.pos.x, player_pos.z - g.pos.z)
+			if _now - g.last_shot > 1.0 \
+				and Vector2(player_pos.x - g.pos.x, player_pos.z - g.pos.z).length() < 75.0:
+				g.last_shot = _now + randf() * 0.5
+				var from := Vector3(g.pos.x, 1.4, g.pos.z)
+				var aim := (Vector3(player_pos.x, 1.2, player_pos.z) - from).normalized()
+				aim.x += (randf() - 0.5) * 0.07
+				aim.z += (randf() - 0.5) * 0.07
+				_spawn_bullet(from, aim.normalized(), WeaponDB.LIST[2], "cop")
+				AudioFX.shoot()
+		else:
+			g.yaw = ayaw
+		g.node.rotation.y = g.yaw
+		g.walk_phase += dt * 6.0
+		Human.animate(g.node, g.walk_phase, not stopped, 0.5, 0.3)
+	# A destroyed convoy vehicle burns out and drops away.
+	for cv in ordered:
+		if cv.hp <= 0.0 and not cv.burning:
+			cv.burning = true
+			cv.burn_timer = 1.4
+		if cv.burning:
+			cv.burn_timer -= dt
+			_spawn_fire(cv.pos.x, 0.4, cv.pos.z, 2)
+			if cv.burn_timer <= 0.0:
+				_explode(cv.pos.x, 1.0, cv.pos.z)
+				cv.node.queue_free()
+				vehicles.erase(cv)
+
+
+## Despawn the whole motorcade and arm the timer for the next run.
+func _end_motorcade() -> void:
+	for v in vehicles.duplicate():
+		if v.get("motorcade", false):
+			if is_instance_valid(v.node):
+				v.node.queue_free()
+			vehicles.erase(v)
+	for g in guards.duplicate():
+		if g.get("motorcade", false):
+			if is_instance_valid(g.node):
+				g.node.queue_free()
+			guards.erase(g)
+	if president != null:
+		if president in vips:
+			vips.erase(president)
+		if is_instance_valid(president.node):
+			president.node.queue_free()
+		president = null
+	pres_state = "home"
+	pres_timer = 110.0 + randf() * 70.0
+	pres_aggro = false
+	convoy_prog = 0.0
+
+
+## The President has been killed — the city falls to the player.
+func _kill_president(v: Dictionary) -> void:
+	_spawn_blood(v.pos.x, 1.2, v.pos.z, 48)
+	if is_instance_valid(v.node):
+		v.node.queue_free()
+	president = null
+	_win_city()
+
+
+func _win_city() -> void:
+	if city_owned:
+		return
+	city_owned = true
+	GameState.money += 5_000_000_000
+	GameState.wanted = 0.0
+	# Presidential protection — 1000x body armour, topped up and held full.
+	player_max_armor = 100000.0
+	player_armor = player_max_armor
+	player_hp = player_max_hp
+	for c in cops:
+		if is_instance_valid(c.node):
+			c.node.queue_free()
+	cops.clear()
+	pres_aggro = false
+	AudioFX.coin()
+	hud.show_victory()
+	_form_presidential_detail()
+	_show_objective("THE PRESIDENT IS DEAD — VICE BEACH IS YOURS. +$5,000,000,000, the police stand down, the treasury pays you, and your own bodyguard detail now escorts you.", 10.0)
+
+
+## As the new President, the player gets a personal detail: bodyguards on foot
+## and a motorcade of escort cars that forms up around the car they drive.
+func _form_presidential_detail() -> void:
+	for gi in 4:
+		var gnode := Human.build(0xd9a878, 0x1a1a20, 0x141418, 0x121212, 0x141418)
+		add_child(gnode)
+		var glimbs: Dictionary = gnode.get_meta("limbs")
+		var holder := Node3D.new()
+		holder.position = Vector3(0.0, -0.86, 0.18)
+		glimbs.armR.add_child(holder)
+		holder.add_child(_weapon_model(2))
+		my_guards.append({
+			"node": gnode, "pos": Vector3(player_pos.x, 0.0, player_pos.z),
+			"yaw": 0.0, "walk_phase": randf() * TAU, "slot": gi, "last_shot": 0.0,
+		})
+	for ei in 4:
+		var enode := CarMesh.build(0x0a0a10, "suv", false, head_mat, tail_mat)
+		add_child(enode)
+		enode.position = Vector3(player_pos.x, 0.0, player_pos.z)
+		my_convoy.append({
+			"node": enode, "pos": Vector3(player_pos.x, 0.0, player_pos.z),
+			"yaw": 0.0, "slot": ei,
+		})
+
+
+## Drive the President-player's escort: bodyguards ring him on foot; the escort
+## cars hang back, then roll into a front-and-back convoy once he settles in a car.
+func _update_my_detail(dt: float) -> void:
+	if not city_owned:
+		return
+	var in_ground_car: bool = in_car != null and not in_car.is_plane \
+		and not in_car.get("is_boat", false) and not in_car.get("is_heli", false)
+	if in_ground_car:
+		_convoy_form += dt
+	else:
+		_convoy_form = 0.0
+	var on_foot: bool = in_car == null and not parachuting and suit_state != "on"
+	# Find the nearest hostile attacking the President — a cop, or an aggroed
+	# bodyguard or VIP.
+	var threat = null
+	var threat_d := 60.0
+	for t in cops:
+		if t.hp > 0.0:
+			var td: float = Vector2(t.pos.x - player_pos.x, t.pos.z - player_pos.z).length()
+			if td < threat_d:
+				threat_d = td
+				threat = t
+	for t in guards + vips:
+		if t.hp > 0.0 and t.get("aggro", false):
+			var td: float = Vector2(t.pos.x - player_pos.x, t.pos.z - player_pos.z).length()
+			if td < threat_d:
+				threat_d = td
+				threat = t
+	# Bodyguards ring the President — and gun down anyone who attacks him.
+	for g in my_guards:
+		if not on_foot:
+			g.node.visible = false
+			g.pos = Vector3(player_pos.x, 0.0, player_pos.z)
+			continue
+		g.node.visible = true
+		if threat != null:
+			# Combat — close on the attacker and open fire.
+			var cdx: float = threat.pos.x - g.pos.x
+			var cdz: float = threat.pos.z - g.pos.z
+			var cdist: float = sqrt(cdx * cdx + cdz * cdz)
+			g.yaw = atan2(cdx, cdz)
+			var advancing: bool = cdist > 12.0
+			if advancing:
+				var cstep: float = minf(cdist - 12.0, 7.5 * dt)
+				var cnx: float = g.pos.x + sin(g.yaw) * cstep
+				var cnz: float = g.pos.z + cos(g.yaw) * cstep
+				if not world.collides_at(cnx, g.pos.z, 0.4):
+					g.pos.x = cnx
+				if not world.collides_at(g.pos.x, cnz, 0.4):
+					g.pos.z = cnz
+			if cdist < 48.0 and _now - g.last_shot > 0.65:
+				g.last_shot = _now + randf() * 0.35
+				var cfrom := Vector3(g.pos.x, 1.4, g.pos.z)
+				var caim := (Vector3(threat.pos.x, 1.2, threat.pos.z) - cfrom).normalized()
+				caim.x += (randf() - 0.5) * 0.05
+				caim.z += (randf() - 0.5) * 0.05
+				# Source "player" — friendly fire passes the President by and
+				# damages the hostiles in npcs/cops/guards/vips.
+				_spawn_bullet(cfrom, caim.normalized(), WeaponDB.LIST[2], "player")
+				AudioFX.shoot()
+			g.walk_phase += dt * 7.5
+			Human.animate(g.node, g.walk_phase, advancing, 0.55, 0.34)
+			g.node.position = g.pos
+			g.node.rotation.y = g.yaw
+		else:
+			# Escort — ring the President.
+			var ga: float = float(g.slot) / float(my_guards.size()) * TAU + _now * 0.25
+			var tx: float = player_pos.x + cos(ga) * 3.8
+			var tz: float = player_pos.z + sin(ga) * 3.8
+			var gdx: float = tx - g.pos.x
+			var gdz: float = tz - g.pos.z
+			var gd: float = sqrt(gdx * gdx + gdz * gdz)
+			var gmoving: bool = gd > 0.5
+			if gmoving:
+				g.yaw = atan2(gdx, gdz)
+				var gstep: float = minf(gd, 6.5 * dt)
+				var gnx: float = g.pos.x + sin(g.yaw) * gstep
+				var gnz: float = g.pos.z + cos(g.yaw) * gstep
+				if not world.collides_at(gnx, g.pos.z, 0.4):
+					g.pos.x = gnx
+				if not world.collides_at(g.pos.x, gnz, 0.4):
+					g.pos.z = gnz
+			g.walk_phase += dt * 7.0
+			Human.animate(g.node, g.walk_phase, gmoving, 0.5, 0.3)
+			g.node.position = g.pos
+			g.node.rotation.y = g.yaw
+	# Escort vehicles — loose until the President settles in a car, then convoy up.
+	for e in my_convoy:
+		var target: Vector3
+		var deadzone: float
+		if in_ground_car and _convoy_form > 3.0:
+			# Two cars ahead, two behind, along the President's heading.
+			var fwd := Vector3(sin(in_car.yaw), 0.0, cos(in_car.yaw))
+			var rgt := Vector3(cos(in_car.yaw), 0.0, -sin(in_car.yaw))
+			var ahead := [16.0, 30.0, -16.0, -30.0]
+			var sidesign := 1.0 if e.slot % 2 == 0 else -1.0
+			target = in_car.pos + fwd * ahead[e.slot] + rgt * (sidesign * 2.4)
+			deadzone = 0.8
+		else:
+			var ea: float = float(e.slot) / float(my_convoy.size()) * TAU
+			target = Vector3(player_pos.x + cos(ea) * 13.0, 0.0,
+				player_pos.z + sin(ea) * 13.0)
+			deadzone = 15.0
+		var edx: float = target.x - e.pos.x
+		var edz: float = target.z - e.pos.z
+		var ed: float = sqrt(edx * edx + edz * edz)
+		if ed > deadzone:
+			e.yaw = atan2(edx, edz)
+			var estep: float = clampf(ed * 2.2, 6.0, 48.0) * dt
+			var enx: float = e.pos.x + sin(e.yaw) * estep
+			var enz: float = e.pos.z + cos(e.yaw) * estep
+			if not world.collides_at(enx, e.pos.z, 1.6):
+				e.pos.x = enx
+			if not world.collides_at(e.pos.x, enz, 1.6):
+				e.pos.z = enz
+		e.node.position = e.pos
+		e.node.rotation.y = e.yaw
 
 
 func _make_helicopter(x: float, z: float, yaw: float) -> Dictionary:
@@ -2233,18 +3463,30 @@ func _push_hud() -> void:
 	var ammo := GameState.get_ammo(w)
 	var speed_label := "SPD"
 	var speed_val := 0.0
+	var show_speedo := false
+	var speed_kmh := 0.0
+	var speed_frac := 0.0
 	if in_car != null:
 		if in_car.is_plane:
 			speed_label = "ALT"
 			speed_val = in_car.pos.y
 		else:
 			speed_val = abs(in_car.speed) * 3.6
+			# Ground car — drive the dashboard speedometer.
+			show_speedo = true
+			speed_kmh = abs(in_car.speed) * 3.6
+			var gauge_max: float = maxf(in_car.max_speed, 1.0) * 1.7 * 3.6
+			speed_frac = speed_kmh / gauge_max
 	elif suit_state == "on":
 		speed_label = "ALT"
 		speed_val = player_pos.y
 	var map_pos: Vector3 = in_car.pos if in_car != null else player_pos
 	var map_yaw: float = in_car.yaw if in_car != null else player_yaw
+	var pres_out: bool = pres_state != "home" and president != null
 	hud.update_hud({
+		"pres_active": pres_out,
+		"pres_x": president.pos.x if pres_out else 0.0,
+		"pres_z": president.pos.z if pres_out else 0.0,
 		"money": GameState.money,
 		"wanted": GameState.wanted,
 		"time_min": GameState.time_min,
@@ -2253,21 +3495,37 @@ func _push_hud() -> void:
 		"weapon": w.name,
 		"ammo": ("∞" if ammo == INF else str(int(ammo))),
 		"speed_label": speed_label, "speed_val": speed_val,
+		"show_speedo": show_speedo, "speed_kmh": speed_kmh, "speed_frac": speed_frac,
 		"waypoint": _waypoint_text(),
 		"map_x": map_pos.x, "map_z": map_pos.z, "map_yaw": map_yaw,
+		"racing": RaceManager.is_active(),
+		"lap": RaceManager.lap,
+		"total_laps": RaceManager.total_laps,
+		"lap_time": RaceManager.format_time(RaceManager.lap_time),
+		"best_lap": RaceManager.format_time(RaceManager.best_lap),
+		"last_lap": RaceManager.format_time(RaceManager.last_lap),
+		"drift": RaceManager.drift_score,
+		"on_track": RaceManager.on_track,
+		"race_rank": race_rank, "race_total": race_total,
 	})
 
 
 func _waypoint_text() -> String:
-	var ax: float = CityWorld.AIRPORT.x
-	var az: float = CityWorld.AIRPORT.z
-	var dx := ax - player_pos.x
-	var dz := az - player_pos.z
+	# Point at the President while his motorcade is out, otherwise the airport.
+	var label := "AIRPORT"
+	var tx: float = CityWorld.AIRPORT.x
+	var tz: float = CityWorld.AIRPORT.z
+	if pres_state != "home" and president != null:
+		label = "PRESIDENT"
+		tx = president.pos.x
+		tz = president.pos.z
+	var dx := tx - player_pos.x
+	var dz := tz - player_pos.z
 	var dist := sqrt(dx * dx + dz * dz)
 	var ang := atan2(dx, dz)
 	var dirs := ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 	var idx := int(round(fposmod(ang, TAU) / (PI / 4.0))) % 8
-	return "AIRPORT %dm %s" % [int(round(dist)), dirs[idx]]
+	return "%s %dm %s" % [label, int(round(dist)), dirs[idx]]
 
 
 func _show_objective(text: String, secs := 3.5) -> void:

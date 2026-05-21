@@ -10,13 +10,16 @@ const WORLD := BLOCK * GRID          # 352 — the dense city core
 const WORLD_HALF := WORLD / 2.0      # 176
 const OUTER_HALF := WORLD_HALF + 250.0   # wide green wilderness ring around the city
 
-# Airport airfield, off the city grid in the south-east — a long grass field.
-const AIRPORT := {"x": 47.0, "z": 81.0}                              # waypoint = terminal forecourt
-const RUNWAY_A := {"x": 98.0, "z": 410.0, "len": 690.0, "w": 16.0}   # main runway (big plane)
-const RUNWAY_B := {"x": 128.0, "z": 350.0, "len": 540.0, "w": 10.0}  # secondary runway (small plane)
-# Flat grass airfield the runways sit on — solid ground, no water to crash into.
-const AIRFIELD := {"x0": 30.0, "x1": 180.0, "z0": 0.0, "z1": 820.0}
-const HELIPAD := {"x": 152.0, "z": 92.0}                             # helicopter pad
+# Airport island — a grass airfield in the bay south of the city, reached by a
+# single causeway. Kept entirely clear of the city grid and the racing circuit.
+const AIRPORT := {"x": 82.0, "z": 230.0}                             # waypoint = terminal forecourt
+const RUNWAY_A := {"x": 172.0, "z": 475.0, "len": 500.0, "w": 16.0}  # main runway (big plane)
+const RUNWAY_B := {"x": 215.0, "z": 460.0, "len": 420.0, "w": 10.0}  # secondary runway (small plane)
+# Flat grass airfield the runways sit on — an island, solid ground amid the sea.
+const AIRFIELD := {"x0": 30.0, "x1": 235.0, "z0": 195.0, "z1": 745.0}
+const HELIPAD := {"x": 145.0, "z": 235.0}                            # helicopter pad
+# Causeway corridor linking the city shore to the terminal — a walkable bay crossing.
+const CAUSEWAY := {"x0": 70.0, "x1": 90.0, "z0": 160.0, "z1": 234.0}
 # Stock-exchange kiosk in the dead-centre downtown block — walk up and press E.
 const EXCHANGE := {"x": 0.0, "z": -6.0}
 # Car dealership kiosk, one block north of the exchange — walk up and press E.
@@ -32,6 +35,46 @@ const REALTOR := {"x": 32.0, "z": -6.0}
 func on_airfield(x: float, z: float) -> bool:
 	return x > AIRFIELD.x0 and x < AIRFIELD.x1 and z > AIRFIELD.z0 and z < AIRFIELD.z1
 
+## True on the causeway deck bridging the bay to the airport island.
+func _on_causeway(x: float, z: float) -> bool:
+	return x > CAUSEWAY.x0 and x < CAUSEWAY.x1 and z > CAUSEWAY.z0 and z < CAUSEWAY.z1
+
+## True where a boat can float — the city river and the open sea — but not on
+## the airport island or its causeway.
+func on_water(x: float, z: float) -> bool:
+	if on_airfield(x, z) or _on_causeway(x, z):
+		return false
+	if _on_estate(x, z) or _on_estate_causeway(x, z):
+		return false
+	# The river channel, running the city's length and out into the bay.
+	if absf(x - RIVER_CX) < RIVER_HALF and z > -WORLD_HALF + 2.0 and z < WORLD_HALF + 14.0:
+		return true
+	# Open sea south of the shoreline.
+	if z > WORLD_HALF + 4.0:
+		return true
+	return false
+
+## True on the President's estate island.
+func _on_estate(x: float, z: float) -> bool:
+	return x > ESTATE_GROUNDS.x0 and x < ESTATE_GROUNDS.x1 \
+		and z > ESTATE_GROUNDS.z0 and z < ESTATE_GROUNDS.z1
+
+## True on the short causeway linking the estate to the airport island.
+func _on_estate_causeway(x: float, z: float) -> bool:
+	return x > ESTATE_CAUSEWAY.x0 and x < ESTATE_CAUSEWAY.x1 \
+		and z > ESTATE_CAUSEWAY.z0 and z < ESTATE_CAUSEWAY.z1
+
+## The board point of the dock nearest a position (Vector3.INF if there are none).
+func nearest_dock(pos: Vector3) -> Vector3:
+	var best := Vector3.INF
+	var bd := INF
+	for d in docks:
+		var dd: float = Vector2(d.board.x - pos.x, d.board.z - pos.z).length()
+		if dd < bd:
+			bd = dd
+			best = d.board
+	return best
+
 # Realistic city palette — concrete, stucco, slate, sandstone, weathered brick.
 const PALETTE := [0x8a8a82, 0x9a8f7a, 0x6e7479, 0x7a6a58, 0x5f6b66, 0xa7a098, 0x55606b, 0x8a7256]
 # Glassy blue-grey towers for the downtown core.
@@ -41,8 +84,22 @@ const VILLA_PALETTE := [0xd8cdb0, 0xc99878, 0xe3dcc8, 0xb8a888, 0xcdb89a, 0xa8b0
 const ROOF_PALETTE := [0x7a3b2e, 0x4a4a52, 0x6a4434, 0x8a4a38]
 const PARK_BLOCKS := [Vector2i(5, 4), Vector2i(4, 8), Vector2i(3, 6)]
 const RIVER_CX := -64.0              # the city river runs north-south here (block 3 centre)
+const RIVER_HALF := 8.0              # half-width of the navigable river channel
+# The President's estate — a large gated compound on its own island in the bay,
+# just west of the airport and reached by a short causeway off the airport.
+const ESTATE_GROUNDS := {"x0": -135.0, "x1": 18.0, "z0": 252.0, "z1": 470.0}
+const ESTATE_CAUSEWAY := {"x0": 14.0, "x1": 34.0, "z0": 330.0, "z1": 350.0}
+const PRESIDENT_HOUSE := {"x": -46.0, "z": 300.0}   # the mansion (motorcade origin)
+# Vice Space launch complex — in the north wilderness, clear of the F1 circuit.
+const LAUNCH := {"x": 210.0, "z": -250.0}
+# The Moon — a grey surface built high above the world; the rocket flies up to it.
+const MOON_Y := 4000.0
+const MOON_PAD := {"x": 0.0, "z": 0.0}
 
 var buildings: Array = []            # collision AABBs {x,z,w,d,h}
+var docks: Array = []                # {board: Vector3 water-end, dir: Vector2}
+var _dock_rects: Array = []          # walkable pier footprints {x,z,w,d}
+var track: Track                     # the F1 circuit looping the wilderness
 var lamp_mats: Array[StandardMaterial3D] = []
 var window_mat: StandardMaterial3D
 var beacon_mat: StandardMaterial3D
@@ -66,6 +123,14 @@ func generate() -> void:
 	_build_city()
 	_place_lamps()
 	_build_airport()
+	_build_beach()
+	_build_presidential_residence()
+	_build_docks()
+	_build_launch_base()
+	_build_moon()
+	track = Track.new()
+	add_child(track)
+	track.build()
 	_add_mountains()
 	_add_outer_landscape()
 	_add_clouds(45)
@@ -86,6 +151,102 @@ func _add_ground() -> void:
 	var beach := Build.plane(WORLD, 30.0, Build.mat(Build.hex(0xd6c79c), 1.0))
 	beach.position = Vector3(0, 0.01, WORLD_HALF - 5.0)
 	add_child(beach)
+
+
+## Vice Space launch complex — a pad, gantry tower, fuel tanks and a sign. The
+## rocket itself is a flyable vehicle spawned by Game.
+func _build_launch_base() -> void:
+	var cx: float = LAUNCH.x
+	var cz: float = LAUNCH.z
+	var concrete := Build.mat(Build.hex(0x8e9298), 0.9)
+	var dark := Build.mat(Build.hex(0x33363d), 0.7)
+	var metal := Build.mat(Build.hex(0xb4b8be), 0.3, 0.7)
+
+	var apron := Build.box(72.0, 0.3, 72.0, concrete)
+	apron.position = Vector3(cx, 0.15, cz)
+	add_child(apron)
+	var pad := Build.cyl(9.0, 9.0, 0.6, 24, dark)
+	pad.position = Vector3(cx, 0.5, cz)
+	add_child(pad)
+
+	# Service / gantry tower beside the pad.
+	var tx := cx + 14.0
+	for ly in range(7):
+		var ring := Build.box(5.4, 0.5, 5.4, metal)
+		ring.position = Vector3(tx, 4.0 + ly * 7.0, cz)
+		add_child(ring)
+	for lx in [-1.0, 1.0]:
+		for lz in [-1.0, 1.0]:
+			var leg := Build.box(0.7, 48.0, 0.7, dark)
+			leg.position = Vector3(tx + lx * 2.4, 24.0, cz + lz * 2.4)
+			add_child(leg)
+	buildings.append({"x": tx, "z": cz, "w": 6.0, "d": 6.0, "h": 48.0})
+
+	# Fuel tanks.
+	for i in 3:
+		var tank := Build.cyl(3.2, 3.2, 14.0, 16, metal)
+		tank.position = Vector3(cx - 24.0, 7.0, cz - 16.0 + i * 16.0)
+		add_child(tank)
+		buildings.append({"x": cx - 24.0, "z": cz - 16.0 + i * 16.0,
+			"w": 6.4, "d": 6.4, "h": 14.0})
+
+	var sign := Label3D.new()
+	sign.text = "VICE SPACE"
+	sign.font_size = 130
+	sign.pixel_size = 0.02
+	sign.modulate = Color("e8e6e0")
+	sign.outline_modulate = Color(0, 0, 0, 0.85)
+	sign.position = Vector3(cx, 6.5, cz + 32.0)
+	sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(sign)
+
+
+## The Moon — a grey cratered surface built high above the world. The rocket
+## flies up here; the player walks the surface in low gravity.
+func _build_moon() -> void:
+	var my: float = MOON_Y
+	var mx: float = MOON_PAD.x
+	var mz: float = MOON_PAD.z
+	var grey := Build.mat(Build.hex(0x9c9ca0), 1.0)
+	var dgrey := Build.mat(Build.hex(0x7a7a80), 1.0)
+
+	var surf := Build.cyl(340.0, 340.0, 4.0, 40, grey)
+	surf.position = Vector3(mx, my - 2.0, mz)
+	add_child(surf)
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1969
+	for i in 44:
+		var a := rng.randf() * TAU
+		var d := rng.randf() * 300.0
+		var cr := 6.0 + rng.randf() * 22.0
+		var crater := Build.cyl(cr, cr * 1.3, 1.8, 14, dgrey)
+		crater.position = Vector3(mx + cos(a) * d, my + 0.2, mz + sin(a) * d)
+		add_child(crater)
+	for i in 32:
+		var a2 := rng.randf() * TAU
+		var d2 := rng.randf() * 310.0
+		var rr := 1.5 + rng.randf() * 3.4
+		var rock := Build.cyl(rr * 0.7, rr, rr * 1.4, 6, dgrey)
+		rock.position = Vector3(mx + cos(a2) * d2, my + rr * 0.7, mz + sin(a2) * d2)
+		add_child(rock)
+
+	# Earth hanging in the black sky.
+	var earth_m := Build.emissive(Build.hex(0x2f6cb4), Build.hex(0x3f86d0), 0.7)
+	var earth := Build.sphere(74.0, earth_m)
+	earth.position = Vector3(mx + 130.0, my + 190.0, mz - 380.0)
+	add_child(earth)
+
+	# Landing pad.
+	var lpad := Build.cyl(11.0, 11.0, 0.5, 24, Build.mat(Build.hex(0x45494f), 0.8))
+	lpad.position = Vector3(mx, my + 0.4, mz)
+	add_child(lpad)
+	var flag_pole := Build.cyl(0.12, 0.12, 6.0, 6, Build.mat(Build.hex(0xcfd2d6), 0.4))
+	flag_pole.position = Vector3(mx + 8.0, my + 3.0, mz + 6.0)
+	add_child(flag_pole)
+	var flag := Build.box(0.1, 1.7, 2.8, Build.mat(Build.hex(0xc23a3a), 0.6))
+	flag.position = Vector3(mx + 8.0, my + 5.0, mz + 7.4)
+	add_child(flag)
 
 func _add_road_strip(x: float, z: float, w: float, d: float) -> void:
 	var sw := Build.box(w + 3.0, 0.04, d + 3.0, _sidewalk_mat)
@@ -169,6 +330,8 @@ func _build_city() -> void:
 			if house_idx >= 0:
 				_build_safehouse(house_idx)              # a buyable safehouse
 				continue
+			if _in_estate(cx, cz) >= 0:
+				continue                                 # reserved estate grounds
 			match _district_of(cx, cz, bx, bz):
 				"river":
 					pass
@@ -405,7 +568,7 @@ func _build_dealership(cx: float, cz: float) -> void:
 	# Two cars lit up inside on the raised showroom floor, two on the forecourt.
 	_add_display_car(cx - 3.7, sz + 0.4, 0x9a9ca0, "hyper", false, PI - 0.5, 0.44)
 	_add_display_car(cx + 3.7, sz + 0.4, 0x2b384e, "suv", false, PI + 0.5, 0.44)
-	_add_display_car(cx - 5.6, cz - 6.5, 0xc23a3a, "sports", true, 0.5)
+	_add_display_car(cx - 5.6, cz - 6.5, 0xc0392b, "f1", false, 0.5)
 	_add_display_car(cx + 5.6, cz - 6.5, 0xdcdcda, "coupe", false, -0.5)
 
 	_build_terminal_kiosk(DEALERSHIP.x, DEALERSHIP.z, "VEHICLES  ·  PRESS E",
@@ -545,7 +708,7 @@ func _build_realtor(cx: float, cz: float) -> void:
 		teal, Color("c0eee2"))
 
 
-## Index of the safehouse whose block centre is (cx, cz), or -1 if none.
+## Index of the safehouse whose anchor block centre is (cx, cz), or -1 if none.
 func _safehouse_at(cx: float, cz: float) -> int:
 	for i in PropertyCatalog.LIST.size():
 		var p: Dictionary = PropertyCatalog.LIST[i]
@@ -554,19 +717,38 @@ func _safehouse_at(cx: float, cz: float) -> int:
 	return -1
 
 
-## A buyable safehouse — a walled modern estate: a two-storey glass-and-white
-## mansion with a stepped upper floor, a three-door garage wing, a pool, a
-## rooftop helipad on the grander homes, hedges, cypress trees, and a gated
-## entrance bearing the estate's name. Pricier properties are built grander.
-## The respawn spot (PropertyCatalog x/z) is the front courtyard, kept clear.
+## Each estate occupies a 2x2 block region — the catalog block plus the three
+## neighbours toward the city centre. Returns the property index if block
+## (cx, cz) falls in any estate region, else -1.
+func _in_estate(cx: float, cz: float) -> int:
+	for i in PropertyCatalog.LIST.size():
+		var p: Dictionary = PropertyCatalog.LIST[i]
+		var ddx: float = -BLOCK if p.x > 0.0 else BLOCK
+		var ddz: float = -BLOCK if p.z > 0.0 else BLOCK
+		for ox in [0.0, ddx]:
+			for oz in [0.0, ddz]:
+				if is_equal_approx(cx, p.x + ox) and is_equal_approx(cz, p.z + oz):
+					return i
+	return -1
+
+
+## A buyable safehouse — a sprawling walled estate filling a 2x2 block region:
+## a big two-storey glass-and-white mansion with a stepped upper floor, a
+## three-door garage wing, a large pool, a rooftop helipad, lawns, hedges,
+## palms and cypress trees, and a gated entrance bearing the estate's name.
+## Pricier properties are built grander. The respawn spot (PropertyCatalog x/z,
+## a corner of the grounds) is kept clear of every building.
 func _build_safehouse(idx: int) -> void:
 	var p: Dictionary = PropertyCatalog.LIST[idx]
-	var cx: float = p.x
-	var cz: float = p.z
-	var s: float = lerpf(0.88, 1.06, idx / 3.0)   # pricier homes are grander
+	# The estate is centred on its 2x2 block region (catalog block + 3 inward).
+	var ddx: float = -BLOCK if p.x > 0.0 else BLOCK
+	var ddz: float = -BLOCK if p.z > 0.0 else BLOCK
+	var cx: float = p.x + ddx / 2.0
+	var cz: float = p.z + ddz / 2.0
+	var s: float = lerpf(0.92, 1.08, idx / 3.0)    # pricier homes are grander
 	var has_pool := idx >= 1
 	var has_heli := idx >= 2
-	var half := 8.5                                # estate plot half-width
+	var half := 26.0                               # estate plot half-width
 
 	var wall_m := Build.mat(Build.hex(0xeceef0), 0.6)
 	var glass_m := Build.mat(Build.hex(0x1f2c3a), 0.12, 0.5)
@@ -578,153 +760,161 @@ func _build_safehouse(idx: int) -> void:
 	var fence_m := Build.mat(Build.hex(0xe4e6e8), 0.7)
 	var water_m := Build.mat(Build.hex(0x2f8fb0), 0.15, 0.35)
 
-	# --- Grounds ---
-	var lawn := Build.box(half * 2.0, 0.12, half * 2.0, lawn_m)
-	lawn.position = Vector3(cx, 0.07, cz)
+	# --- Grounds: a big lawn, a driveway and a paved forecourt ---
+	var lawn := Build.box(half * 2.0, 0.14, half * 2.0, lawn_m)
+	lawn.position = Vector3(cx, 0.09, cz)
 	add_child(lawn)
-	var drive := Build.box(8.0, 0.14, half * 2.0 - 1.0, pave_m)
-	drive.position = Vector3(cx, 0.1, cz)
+	var drive := Build.box(13.0, 0.16, half * 2.0 - 2.0, pave_m)
+	drive.position = Vector3(cx, 0.12, cz)
 	add_child(drive)
+	var court := Build.box(30.0, 0.16, 14.0, pave_m)
+	court.position = Vector3(cx, 0.13, cz - 2.0)
+	add_child(court)
 
 	# --- Main house: two stepped storeys ---
-	var gw := 13.4 * s
-	var gd := 6.6 * s
-	var gh := 4.9
+	var gw := 26.0 * s
+	var gd := 14.0 * s
+	var gh := 5.4
 	var hcx := cx + 1.0
-	var hcz := cz + 4.7
+	var hcz := cz + 7.0
 	var g1 := Build.box(gw, gh, gd, wall_m)
-	g1.position = Vector3(hcx, gh / 2.0 + 0.14, hcz)
+	g1.position = Vector3(hcx, gh / 2.0 + 0.16, hcz)
 	add_child(g1)
 	buildings.append({"x": hcx, "z": hcz, "w": gw, "d": gd, "h": gh})
-	var r1 := Build.box(gw + 0.7, 0.45, gd + 0.7, roof_m)
-	r1.position = Vector3(hcx, gh + 0.34, hcz)
+	var r1 := Build.box(gw + 0.8, 0.5, gd + 0.8, roof_m)
+	r1.position = Vector3(hcx, gh + 0.38, hcz)
 	add_child(r1)
 
-	var uw := 7.6 * s
-	var ud := 5.4 * s
-	var uh := 4.0
-	var ucx := hcx - 2.4
-	var uy := gh + 0.56
+	var uw := 16.0 * s
+	var ud := 9.0 * s
+	var uh := 4.6
+	var ucx := hcx - 3.0
+	var ucz := hcz + 0.6
+	var uy := gh + 0.62
 	var g2 := Build.box(uw, uh, ud, wall_m)
-	g2.position = Vector3(ucx, uy + uh / 2.0, hcz + 0.3)
+	g2.position = Vector3(ucx, uy + uh / 2.0, ucz)
 	add_child(g2)
-	var r2 := Build.box(uw + 0.6, 0.4, ud + 0.6, roof_m)
-	r2.position = Vector3(ucx, uy + uh + 0.3, hcz + 0.3)
+	var r2 := Build.box(uw + 0.7, 0.45, ud + 0.7, roof_m)
+	r2.position = Vector3(ucx, uy + uh + 0.32, ucz)
 	add_child(r2)
 
-	# Glass — window bands facing the courtyard, plus a side wall of glass.
-	var fz := hcz - gd / 2.0 - 0.05
-	for wx in [-3.8, -0.4, 3.0]:
-		var pane := Build.box(2.7 * s, 2.7, 0.22, glass_m)
-		pane.position = Vector3(hcx + wx * s, 2.4, fz)
+	# Glass — broad window bands on both floors, plus a glazed side wall.
+	var fzf := hcz - gd / 2.0 - 0.05
+	for wx in [-8.0, -4.0, 0.0, 4.0]:
+		var pane := Build.box(3.0 * s, 3.0, 0.24, glass_m)
+		pane.position = Vector3(hcx + wx * s, 2.8, fzf)
 		add_child(pane)
-	for wx2 in [-2.0, 2.0]:
-		var pane2 := Build.box(2.5 * s, 2.4, 0.22, glass_m)
-		pane2.position = Vector3(ucx + wx2 * s, uy + 2.1, hcz + 0.3 - ud / 2.0 - 0.05)
+	var ufzf := ucz - ud / 2.0 - 0.05
+	for wx2 in [-4.5, 0.0, 4.5]:
+		var pane2 := Build.box(2.8 * s, 2.6, 0.24, glass_m)
+		pane2.position = Vector3(ucx + wx2 * s, uy + 2.3, ufzf)
 		add_child(pane2)
-	var side_glass := Build.box(0.22, 2.6, 3.6 * s, glass_m)
-	side_glass.position = Vector3(hcx + gw / 2.0 + 0.04, 2.5, hcz)
+	var side_glass := Build.box(0.24, 3.0, 6.0 * s, glass_m)
+	side_glass.position = Vector3(hcx + gw / 2.0 + 0.04, 2.8, hcz)
 	add_child(side_glass)
 
 	# Glowing entrance door, courtyard-facing.
 	var door_glow := Build.emissive(Build.hex(0x2a2418), Color("ffd98a"), 1.5)
-	var door := Build.box(2.6, 3.2, 0.3, door_glow)
-	door.position = Vector3(hcx + 4.4 * s, 1.7, fz)
+	var door := Build.box(3.2, 3.6, 0.34, door_glow)
+	door.position = Vector3(hcx + 8.5 * s, 1.9, fzf)
 	add_child(door)
 
 	# --- Three-door garage wing, front-left ---
-	var gar_w := 8.4
-	var gar_d := 5.4
-	var gar_h := 3.6
-	var gar_x := cx - 4.1
-	var gar_z := cz - 4.0
+	var gar_w := 15.0
+	var gar_d := 7.0
+	var gar_h := 4.2
+	var gar_x := cx - 14.0
+	var gar_z := cz - 5.5
 	var garage := Build.box(gar_w, gar_h, gar_d, wall_m)
-	garage.position = Vector3(gar_x, gar_h / 2.0 + 0.14, gar_z)
+	garage.position = Vector3(gar_x, gar_h / 2.0 + 0.16, gar_z)
 	add_child(garage)
 	buildings.append({"x": gar_x, "z": gar_z, "w": gar_w, "d": gar_d, "h": gar_h})
-	var gar_roof := Build.box(gar_w + 0.5, 0.4, gar_d + 0.5, roof_m)
-	gar_roof.position = Vector3(gar_x, gar_h + 0.3, gar_z)
+	var gar_roof := Build.box(gar_w + 0.6, 0.45, gar_d + 0.6, roof_m)
+	gar_roof.position = Vector3(gar_x, gar_h + 0.34, gar_z)
 	add_child(gar_roof)
 	for di in 3:
-		var dx := gar_x - gar_w / 2.0 + 1.6 + di * 2.55
-		var gd_mi := Build.box(2.2, 2.6, 0.2, door_m)
-		gd_mi.position = Vector3(dx, 1.45, gar_z - gar_d / 2.0 - 0.07)
-		add_child(gd_mi)
+		var dx := gar_x - gar_w / 2.0 + 2.6 + di * 4.2
+		var gdm := Build.box(3.4, 3.0, 0.22, door_m)
+		gdm.position = Vector3(dx, 1.66, gar_z - gar_d / 2.0 - 0.08)
+		add_child(gdm)
 
 	# --- Rooftop helipad (grander estates) ---
 	if has_heli:
-		var pad_x := hcx + gw / 2.0 - 3.0
-		var pad := Build.cyl(2.2, 2.2, 0.12, 24, Build.mat(Build.hex(0x2e3138), 0.9))
-		pad.position = Vector3(pad_x, gh + 0.62, hcz)
+		var pad_x := hcx + gw / 2.0 - 5.0
+		var pad := Build.cyl(3.2, 3.2, 0.14, 28, Build.mat(Build.hex(0x2e3138), 0.9))
+		pad.position = Vector3(pad_x, gh + 0.68, hcz)
 		add_child(pad)
 		var hp := Build.mat(Build.hex(0xe7e7e2), 0.85)
-		for legdx in [-0.8, 0.8]:
-			var leg := Build.box(0.42, 0.05, 2.2, hp)
-			leg.position = Vector3(pad_x + legdx, gh + 0.7, hcz)
+		for legdx in [-1.1, 1.1]:
+			var leg := Build.box(0.55, 0.06, 3.0, hp)
+			leg.position = Vector3(pad_x + legdx, gh + 0.78, hcz)
 			add_child(leg)
-		var bar := Build.box(1.6, 0.05, 0.46, hp)
-		bar.position = Vector3(pad_x, gh + 0.7, hcz)
+		var bar := Build.box(2.3, 0.06, 0.6, hp)
+		bar.position = Vector3(pad_x, gh + 0.78, hcz)
 		add_child(bar)
 
 	# --- Swimming pool + deck, front-right ---
 	if has_pool:
-		var deck := Build.box(7.6, 0.16, 6.8, pave_m)
-		deck.position = Vector3(cx + 4.7, 0.13, cz - 1.2)
+		var deck := Build.box(16.0, 0.18, 13.0, pave_m)
+		deck.position = Vector3(cx + 13.0, 0.15, cz - 5.5)
 		add_child(deck)
-		var pool := Build.box(5.2, 0.3, 4.2, water_m)
-		pool.position = Vector3(cx + 4.7, 0.22, cz - 1.2)
+		var pool := Build.box(11.0, 0.34, 7.4, water_m)
+		pool.position = Vector3(cx + 13.0, 0.26, cz - 5.5)
 		add_child(pool)
-		for li in [-1.4, 1.4]:
-			var lounge := Build.box(0.85, 0.3, 1.9, Build.mat(Build.hex(0xdad6c8), 0.8))
-			lounge.position = Vector3(cx + 7.2, 0.32, cz - 1.2 + li)
+		for li in [-2.4, 0.0, 2.4]:
+			var lounge := Build.box(1.1, 0.32, 2.4, Build.mat(Build.hex(0xdad6c8), 0.8))
+			lounge.position = Vector3(cx + 18.5, 0.36, cz - 5.5 + li)
 			add_child(lounge)
 
-	# --- Perimeter wall: back, sides, and the two flanks of an 8 m gate gap ---
-	var t := 0.4
-	var wh := 1.7
+	# --- Perimeter wall with an 11 m gate gap on the front (-z) side ---
+	var t := 0.45
+	var wh := 2.0
 	_wall(cx, cz + half, half * 2.0, wh, t, fence_m)
 	_wall(cx - half, cz, t, wh, half * 2.0, fence_m)
 	_wall(cx + half, cz, t, wh, half * 2.0, fence_m)
-	var flank := half - 4.0
-	_wall(cx - 4.0 - flank / 2.0, cz - half, flank, wh, t, fence_m)
-	_wall(cx + 4.0 + flank / 2.0, cz - half, flank, wh, t, fence_m)
+	var flank := half - 5.5
+	_wall(cx - 5.5 - flank / 2.0, cz - half, flank, wh, t, fence_m)
+	_wall(cx + 5.5 + flank / 2.0, cz - half, flank, wh, t, fence_m)
 
 	# Gate posts with glowing lamp caps.
-	for px in [cx - 4.0, cx + 4.0]:
-		var post := Build.box(1.0, 2.8, 1.0, fence_m)
-		post.position = Vector3(px, 1.56, cz - half)
+	for px in [cx - 5.5, cx + 5.5]:
+		var post := Build.box(1.4, 3.4, 1.4, fence_m)
+		post.position = Vector3(px, 1.86, cz - half)
 		add_child(post)
-		var cap := Build.box(0.7, 0.7, 0.7,
+		var cap := Build.box(1.0, 1.0, 1.0,
 			Build.emissive(Build.hex(0x2a2418), Color("ffe6a8"), 1.6))
-		cap.position = Vector3(px, 3.1, cz - half)
+		cap.position = Vector3(px, 3.9, cz - half)
 		add_child(cap)
 
-	# Hedges along the front wall.
-	for hx in [cx - 4.0 - flank / 2.0, cx + 4.0 + flank / 2.0]:
-		var hedge := Build.box(flank - 0.6, 1.1, 1.0, hedge_m)
-		hedge.position = Vector3(hx, 0.7, cz - half + 1.3)
+	# Hedges lining the front wall.
+	for hx in [cx - 5.5 - flank / 2.0, cx + 5.5 + flank / 2.0]:
+		var hedge := Build.box(flank - 1.0, 1.4, 1.4, hedge_m)
+		hedge.position = Vector3(hx, 0.85, cz - half + 1.6)
 		add_child(hedge)
 
-	# Cypress trees tucked in clear corners of the grounds.
-	for spot in [Vector2(cx - half + 1.0, cz + half - 2.5),
-			Vector2(cx + half - 1.0, cz - half + 2.5)]:
-		var trunk := Build.cyl(0.18, 0.22, 1.4, 6,
-			Build.mat(Build.hex(0x6b4422), 0.95))
-		trunk.position = Vector3(spot.x, 0.7, spot.y)
+	# Palms across the grounds and cypress trees flanking the drive.
+	for sp in [Vector2(cx - half + 4.0, cz + half - 5.0),
+			Vector2(cx + half - 4.0, cz + half - 5.0),
+			Vector2(cx - half + 5.0, cz - half + 7.0),
+			Vector2(cx + half - 5.0, cz - half + 9.0)]:
+		_add_palm(sp.x, sp.y)
+	for cyp in [Vector2(cx - 9.0, cz - half + 5.0),
+			Vector2(cx + 9.0, cz - half + 5.0)]:
+		var trunk := Build.cyl(0.2, 0.24, 1.5, 6, Build.mat(Build.hex(0x6b4422), 0.95))
+		trunk.position = Vector3(cyp.x, 0.75, cyp.y)
 		add_child(trunk)
-		var foliage := Build.cyl(0.1, 1.5, 6.2, 7,
-			Build.mat(Build.hex(0x3f6a36), 0.95))
-		foliage.position = Vector3(spot.x, 4.4, spot.y)
+		var foliage := Build.cyl(0.1, 1.7, 7.0, 7, Build.mat(Build.hex(0x3f6a36), 0.95))
+		foliage.position = Vector3(cyp.x, 4.9, cyp.y)
 		add_child(foliage)
 
 	# Estate name sign above the gate.
 	var sign_text := Label3D.new()
 	sign_text.text = p.name
-	sign_text.font_size = 52
-	sign_text.pixel_size = 0.011
+	sign_text.font_size = 60
+	sign_text.pixel_size = 0.014
 	sign_text.modulate = Color("fff2d2")
 	sign_text.outline_modulate = Color(0, 0, 0, 0.9)
-	sign_text.position = Vector3(cx, 3.5, cz - half)
+	sign_text.position = Vector3(cx, 4.4, cz - half)
 	sign_text.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(sign_text)
 
@@ -819,8 +1009,8 @@ func _build_park(cx: float, cz: float) -> void:
 func _build_river() -> void:
 	# The river is narrower than the gap between its two banking roads, so it
 	# never floods onto the streets.
-	var river_w := BLOCK - ROAD_W - 3.0
-	var river := Build.plane(river_w, WORLD, Build.mat(Build.hex(0x356d8a), 0.3, 0.3))
+	var river_w := RIVER_HALF * 2.0
+	var river := Build.plane(river_w, WORLD, Build.mat(Build.hex(0x2f6f8c), 0.18, 0.35))
 	river.position = Vector3(RIVER_CX, 0.06, 0.0)
 	add_child(river)
 	var deck_m := Build.mat(Build.hex(0x3a3a42), 0.85)
@@ -871,6 +1061,320 @@ func _add_leafy_tree(x: float, z: float) -> void:
 		add_child(ball)
 	buildings.append({"x": x, "z": z, "w": 0.7, "d": 0.7, "h": 3.0})
 
+## A leisure stretch along the western part of the south shore — towels,
+## sunbathers in swimwear, parasols, strolling beachgoers and moored boats.
+func _build_beach() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260521
+	var skins := [0xe8b890, 0xc88a5a, 0xf0c8a0, 0x8d5a3a, 0xd6a070]
+	var hairs := [0x2a1a08, 0x6b4a20, 0x111111, 0xc9a24a, 0x7a3b1a]
+	var bikinis := [0xff5fa2, 0x18c0c8, 0xffd23f, 0xff7043, 0xf0f0f0, 0x9c27b0]
+	var shorts := [0x2a6fb0, 0xe04a3a, 0x33aa55, 0xffa726, 0x5e35b1, 0x00897b]
+	var towels := [0xff5252, 0x42a5f5, 0xffca28, 0x26a69a, 0xec407a]
+
+	# Sunbathers laid out on towels across the dry sand.
+	var x := -150.0
+	while x < 14.0:
+		if absf(x - RIVER_CX) < RIVER_HALF + 5.0:
+			x += 13.0                                # leave the river mouth clear
+			continue
+		var tz := 163.0 + rng.randf() * 12.0
+		var female := rng.randf() < 0.5
+		var suit: int = (bikinis if female else shorts)[rng.randi() % 6]
+		_add_beach_towel(x, tz, towels[rng.randi() % towels.size()], rng.randf() * 0.6 - 0.3)
+		_add_sunbather(x, tz, female, skins[rng.randi() % skins.size()],
+			suit, hairs[rng.randi() % hairs.size()])
+		if rng.randf() < 0.55:
+			_add_parasol(x + 1.7, tz - 0.4, bikinis[rng.randi() % bikinis.size()])
+		if rng.randf() < 0.4:
+			var ball := Build.sphere(0.32, Build.mat(Build.hex(bikinis[rng.randi() % bikinis.size()]), 0.6))
+			ball.position = Vector3(x + 1.2, 0.32, tz + 1.6)
+			add_child(ball)
+		x += 14.0 + rng.randf() * 8.0
+
+	# Beachgoers strolling the sand on foot.
+	for _i in 12:
+		var sx := -148.0 + rng.randf() * 158.0
+		if absf(sx - RIVER_CX) < RIVER_HALF + 3.0:
+			continue                                 # not on the river mouth
+		var sz := 159.0 + rng.randf() * 18.0
+		var female2 := rng.randf() < 0.5
+		var suit2: int = (bikinis if female2 else shorts)[rng.randi() % 6]
+		var h := Human.build(skins[rng.randi() % skins.size()],
+			suit2 if female2 else skins[rng.randi() % skins.size()],
+			suit2, hairs[rng.randi() % hairs.size()], -1, female2)
+		h.position = Vector3(sx, 0.0, sz)
+		h.rotation.y = rng.randf() * TAU
+		add_child(h)
+
+	# Boats moored just offshore in the shallows.
+	var bx := -140.0
+	while bx < 10.0:
+		_add_boat(bx + rng.randf() * 10.0, 198.0 + rng.randf() * 46.0,
+			rng.randf() * TAU, rng)
+		bx += 30.0 + rng.randf() * 14.0
+
+func _add_beach_towel(x: float, z: float, color: int, yaw: float) -> void:
+	var towel := Build.box(1.2, 0.05, 2.4, Build.mat(Build.hex(color), 0.95))
+	towel.position = Vector3(x, 0.06, z)
+	towel.rotation.y = yaw
+	add_child(towel)
+
+func _add_sunbather(x: float, z: float, female: bool, skin: int, suit: int, hair: int) -> void:
+	# Built standing, then tipped onto its back to lie flat on the towel.
+	var h := Human.build(skin, suit if female else skin, suit, hair, -1, female)
+	h.rotation.x = PI / 2.0
+	h.position = Vector3(x, 0.3, z + 1.0)
+	add_child(h)
+
+func _add_parasol(x: float, z: float, color: int) -> void:
+	var pole := Build.cyl(0.05, 0.05, 3.0, 8, Build.mat(Build.hex(0xdedede), 0.5, 0.6))
+	pole.position = Vector3(x, 1.5, z)
+	add_child(pole)
+	var canopy := Build.cyl(0.0, 2.0, 0.5, 14, Build.mat(Build.hex(color), 0.85))
+	canopy.position = Vector3(x, 3.05, z)
+	add_child(canopy)
+	buildings.append({"x": x, "z": z, "w": 0.4, "d": 0.4, "h": 3.0})
+
+func _add_boat(x: float, z: float, yaw: float, rng: RandomNumberGenerator) -> void:
+	var boat := Node3D.new()
+	boat.position = Vector3(x, 0.3, z)
+	boat.rotation.y = yaw
+	boat.rotation.z = rng.randf() * 0.06 - 0.03
+	add_child(boat)
+	var hull_c: int = [0xe8e8e8, 0xcf3a3a, 0x2f6fb0, 0xf0c020, 0x2a2a32][rng.randi() % 5]
+	var hull := Build.box(2.4, 0.8, 6.0, Build.mat(Build.hex(hull_c), 0.6))
+	hull.position.y = 0.0
+	boat.add_child(hull)
+	var deck := Build.box(2.0, 0.12, 5.2, Build.mat(Build.hex(0xc9a878), 0.8))
+	deck.position = Vector3(0, 0.42, 0)
+	boat.add_child(deck)
+	var bow := Build.box(2.2, 0.78, 1.0, Build.mat(Build.hex(hull_c), 0.6))
+	bow.position = Vector3(0, 0.0, 3.3)
+	bow.rotation.x = -0.35
+	boat.add_child(bow)
+	var cabin := Build.box(1.5, 1.0, 2.2, Build.mat(Build.hex(0xf4f4f4), 0.5))
+	cabin.position = Vector3(0, 1.0, -0.8)
+	boat.add_child(cabin)
+	var mast := Build.cyl(0.05, 0.06, 3.0, 8, Build.mat(Build.hex(0xdedede), 0.4, 0.6))
+	mast.position = Vector3(0, 2.0, 0.4)
+	boat.add_child(mast)
+
+## Wooden jetties on the riverbanks and the beach — boats moor here and the
+## player can walk the planks on or off a boat.
+func _build_docks() -> void:
+	var plank_m := Build.mat(Build.hex(0x8a6a40), 0.9)
+	var pile_m := Build.mat(Build.hex(0x4f3c22), 0.95)
+	# Each pier runs from a bank end to a water end (the board point).
+	var piers := [
+		[Vector3(-74, 0, -48), Vector3(-66, 0, -48)],     # river — west bank
+		[Vector3(-54, 0, 40), Vector3(-62, 0, 40)],       # river — east bank
+		[Vector3(-74, 0, 124), Vector3(-66, 0, 124)],     # river — west bank
+		[Vector3(-36, 0, 172), Vector3(-36, 0, 192)],     # south beach jetty
+		[Vector3(44, 0, 172), Vector3(44, 0, 192)],       # south beach jetty
+	]
+	for pr in piers:
+		var a: Vector3 = pr[0]
+		var b: Vector3 = pr[1]
+		var mid := (a + b) * 0.5
+		var span := b - a
+		var horiz: bool = absf(span.x) > absf(span.z)
+		var length := span.length()
+		var deck_w := 3.4
+		var deck := Build.box(length if horiz else deck_w, 0.3,
+			deck_w if horiz else length, plank_m)
+		deck.position = Vector3(mid.x, 0.34, mid.z)
+		add_child(deck)
+		var n := maxi(2, int(length / 3.0))
+		for i in n + 1:
+			var p := a.lerp(b, float(i) / float(n))
+			for side in [-1.0, 1.0]:
+				var pile := Build.cyl(0.22, 0.26, 2.4, 6, pile_m)
+				if horiz:
+					pile.position = Vector3(p.x, 0.0, p.z + side * deck_w / 2.0)
+				else:
+					pile.position = Vector3(p.x + side * deck_w / 2.0, 0.0, p.z)
+				add_child(pile)
+		var postn := Build.cyl(0.18, 0.2, 1.4, 6, pile_m)
+		postn.position = Vector3(b.x, 0.7, b.z)
+		add_child(postn)
+		var rw := (length + 1.0) if horiz else deck_w
+		var rd := deck_w if horiz else (length + 1.0)
+		_dock_rects.append({"x": mid.x, "z": mid.z, "w": rw, "d": rd})
+		docks.append({"board": Vector3(b.x, 0.0, b.z),
+			"dir": Vector2(span.x, span.z).normalized()})
+
+## The President's estate — a vast gated compound on its own bay island: a grand
+## two-storey mansion, a lake, landscaped parkland, a huge garage and a helipad.
+func _build_presidential_residence() -> void:
+	var ex0: float = ESTATE_GROUNDS.x0
+	var ex1: float = ESTATE_GROUNDS.x1
+	var ez0: float = ESTATE_GROUNDS.z0
+	var ez1: float = ESTATE_GROUNDS.z1
+	var ecx := (ex0 + ex1) / 2.0
+	var ecz := (ez0 + ez1) / 2.0
+	var gate_z := 340.0
+	var road_m := Build.mat(Build.hex(0x6a6a72), 0.9)
+
+	# --- Estate grounds — a manicured lawn island in the bay. ---
+	var lawn := Build.plane(ex1 - ex0, ez1 - ez0, Build.mat(Build.hex(0x4f7d3a), 0.95))
+	lawn.position = Vector3(ecx, 0.05, ecz)
+	add_child(lawn)
+
+	# --- Causeway linking the estate to the airport island. ---
+	var cw := Build.box(ESTATE_CAUSEWAY.x1 - ESTATE_CAUSEWAY.x0 + 6.0, 0.4,
+		ESTATE_CAUSEWAY.z1 - ESTATE_CAUSEWAY.z0, Build.mat(Build.hex(0x33343a), 0.9))
+	cw.position = Vector3((ESTATE_CAUSEWAY.x0 + ESTATE_CAUSEWAY.x1) / 2.0, 0.2, gate_z)
+	add_child(cw)
+	for rz in [gate_z - 10.0, gate_z + 10.0]:
+		var rail := Build.box(ESTATE_CAUSEWAY.x1 - ESTATE_CAUSEWAY.x0 + 6.0, 1.0, 0.5,
+			Build.mat(Build.hex(0x6a6e74), 0.5, 0.4))
+		rail.position = Vector3((ESTATE_CAUSEWAY.x0 + ESTATE_CAUSEWAY.x1) / 2.0, 0.75, rz)
+		add_child(rail)
+
+	# --- Perimeter wall with a grand gateway on the east (airport) side. ---
+	var wall_m := Build.mat(Build.hex(0xc4bda8), 0.9)
+	var wh := 3.0
+	_wall(ecx, ez0, ex1 - ex0, wh, 0.8, wall_m)            # north
+	_wall(ecx, ez1, ex1 - ex0, wh, 0.8, wall_m)            # south
+	_wall(ex0, ecz, 0.8, wh, ez1 - ez0, wall_m)            # west
+	var e_n := (gate_z - 5.0) - ez0
+	var e_s := ez1 - (gate_z + 5.0)
+	_wall(ex1, ez0 + e_n / 2.0, 0.8, wh, e_n, wall_m)
+	_wall(ex1, ez1 - e_s / 2.0, 0.8, wh, e_s, wall_m)
+	for gz in [gate_z - 5.0, gate_z + 5.0]:
+		var gpost := Build.box(1.6, 5.0, 1.6, Build.mat(Build.hex(0x8a8276), 0.85))
+		gpost.position = Vector3(ex1, 2.5, gz)
+		add_child(gpost)
+		buildings.append({"x": ex1, "z": gz, "w": 1.6, "d": 1.6, "h": 5.0})
+
+	# --- Driveways — gate to mansion, and a spur to the garage. ---
+	var drive := Build.box(64.0, 0.06, 7.0, road_m)
+	drive.position = Vector3(ex1 - 32.0, 0.12, gate_z)
+	add_child(drive)
+	var drive2 := Build.box(6.0, 0.06, 30.0, road_m)
+	drive2.position = Vector3(-28.0, 0.12, 326.0)
+	add_child(drive2)
+
+	# --- The mansion — a grand two-storey residence. ---
+	var mx: float = PRESIDENT_HOUSE.x
+	var mz: float = PRESIDENT_HOUSE.z
+	var house_m := Build.mat(Build.hex(0xece7d8), 0.85)
+	var trim_m := Build.mat(Build.hex(0xf4f1e6), 0.8)
+	var roof_m := Build.mat(Build.hex(0x5e3a2c), 0.9)
+	var mw := 16.0
+	var md := 10.0
+	var mh := 11.0
+	var main := Build.box(mw * 2.0, mh, md * 2.0, house_m)
+	main.position = Vector3(mx, mh / 2.0 + 0.05, mz)
+	add_child(main)
+	buildings.append({"x": mx, "z": mz, "w": mw * 2.0, "d": md * 2.0, "h": mh})
+	var band := Build.box(mw * 2.0 + 0.4, 0.5, md * 2.0 + 0.4, trim_m)
+	band.position = Vector3(mx, mh / 2.0 + 0.05, mz)
+	add_child(band)
+	var mroof := Build.box(mw * 2.0 + 2.0, 1.0, md * 2.0 + 2.0, roof_m)
+	mroof.position = Vector3(mx, mh + 0.55, mz)
+	add_child(mroof)
+	for wz in [mz - md - 5.0, mz + md + 5.0]:
+		var wing := Build.box(18.0, 7.0, 12.0, house_m)
+		wing.position = Vector3(mx + 2.0, 3.55, wz)
+		add_child(wing)
+		buildings.append({"x": mx + 2.0, "z": wz, "w": 18.0, "d": 12.0, "h": 7.0})
+		var wroof := Build.box(19.6, 0.8, 13.6, roof_m)
+		wroof.position = Vector3(mx + 2.0, 7.4, wz)
+		add_child(wroof)
+	# Columned portico facing the drive (east).
+	var portico := Build.box(4.0, 0.6, 14.0, trim_m)
+	portico.position = Vector3(mx + mw + 2.0, mh - 0.6, mz)
+	add_child(portico)
+	for cz2 in [mz - 5.0, mz - 1.7, mz + 1.7, mz + 5.0]:
+		var col := Build.cyl(0.45, 0.5, mh - 0.6, 12, trim_m)
+		col.position = Vector3(mx + mw + 2.0, (mh - 0.6) / 2.0, cz2)
+		add_child(col)
+	var win_m := Build.mat(Build.hex(0x35506a), 0.2, 0.4)
+	for fy in [3.0, 7.6]:
+		for wz2 in [mz - 6.0, mz - 2.0, mz + 2.0, mz + 6.0]:
+			var win := Build.box(0.3, 2.0, 1.6, win_m)
+			win.position = Vector3(mx + mw + 0.06, fy, wz2)
+			add_child(win)
+	# Flagpoles flanking the portico.
+	for fz in [mz - 8.0, mz + 8.0]:
+		var fpole := Build.cyl(0.1, 0.13, 11.0, 8, Build.mat(Build.hex(0xcfcfcf), 0.4, 0.6))
+		fpole.position = Vector3(mx + mw + 4.0, 5.5, fz)
+		add_child(fpole)
+		var flag := Build.box(0.1, 1.3, 2.2, Build.mat(Build.hex(0xb01a1a), 0.7))
+		flag.position = Vector3(mx + mw + 4.0, 9.8, fz + 1.2)
+		add_child(flag)
+
+	# --- Huge garage — a long six-bay block. ---
+	var gcx := -22.0
+	var gcz := 372.0
+	var gw := 19.0
+	var gd := 8.0
+	var gh := 7.0
+	var garage := Build.box(gw * 2.0, gh, gd * 2.0, Build.mat(Build.hex(0xb8b2a2), 0.9))
+	garage.position = Vector3(gcx, gh / 2.0 + 0.05, gcz)
+	add_child(garage)
+	buildings.append({"x": gcx, "z": gcz, "w": gw * 2.0, "d": gd * 2.0, "h": gh})
+	var groof := Build.box(gw * 2.0 + 1.4, 0.7, gd * 2.0 + 1.4, Build.mat(Build.hex(0x44464c), 0.9))
+	groof.position = Vector3(gcx, gh + 0.35, gcz)
+	add_child(groof)
+	var door_m := Build.mat(Build.hex(0x2f3138), 0.5, 0.3)
+	for k in 6:
+		var door := Build.box(4.6, 4.6, 0.3, door_m)
+		door.position = Vector3(gcx - gw + 4.0 + k * 6.0, 2.4, gcz - gd - 0.06)
+		add_child(door)
+	var gapron := Build.box(gw * 2.0 + 6.0, 0.06, 14.0, road_m)
+	gapron.position = Vector3(gcx, 0.12, gcz - gd - 7.0)
+	add_child(gapron)
+
+	# --- Helipad — circular pad with a painted H, north-west of the mansion. ---
+	var hx := -104.0
+	var hz := 286.0
+	var pad := Build.cyl(13.0, 13.0, 0.16, 30, Build.mat(Build.hex(0x383841), 0.92))
+	pad.position = Vector3(hx, 0.13, hz)
+	add_child(pad)
+	var hpaint := Build.mat(Build.hex(0xe8e8e8), 0.85)
+	for leg_dx in [-2.6, 2.6]:
+		var leg := Build.box(1.6, 0.05, 8.0, hpaint)
+		leg.position = Vector3(hx + leg_dx, 0.22, hz)
+		add_child(leg)
+	var hbar := Build.box(3.6, 0.05, 1.8, hpaint)
+	hbar.position = Vector3(hx, 0.22, hz)
+	add_child(hbar)
+
+	# --- Ornamental lake in the south-west of the grounds. ---
+	var lake := Build.plane(58.0, 42.0, Build.mat(Build.hex(0x2f6f8c), 0.18, 0.35))
+	lake.position = Vector3(-92.0, 0.09, 418.0)
+	add_child(lake)
+	var kerb_m := Build.mat(Build.hex(0x9a9488), 0.9)
+	for kz in [396.0, 440.0]:
+		var k := Build.box(62.0, 0.4, 1.4, kerb_m)
+		k.position = Vector3(-92.0, 0.2, kz)
+		add_child(k)
+	for kx in [-122.0, -62.0]:
+		var k2 := Build.box(1.4, 0.4, 46.0, kerb_m)
+		k2.position = Vector3(kx, 0.2, 418.0)
+		add_child(k2)
+
+	# --- Parkland — a central fountain ringed by trees in the south-east. ---
+	var fountain := Build.cyl(4.0, 4.4, 0.7, 20, kerb_m)
+	fountain.position = Vector3(-24.0, 0.35, 420.0)
+	add_child(fountain)
+	var fwater := Build.cyl(3.3, 3.3, 0.2, 20, Build.mat(Build.hex(0x3f8fae), 0.2, 0.4))
+	fwater.position = Vector3(-24.0, 0.7, 420.0)
+	add_child(fwater)
+	var fjet := Build.cyl(0.3, 0.4, 3.0, 8, Build.mat(Build.hex(0xbfe0ea), 0.3))
+	fjet.position = Vector3(-24.0, 2.2, 420.0)
+	add_child(fjet)
+	buildings.append({"x": -24.0, "z": 420.0, "w": 8.4, "d": 8.4, "h": 0.7})
+	for ps in [Vector2(-6, 400), Vector2(-44, 410), Vector2(-8, 440),
+			Vector2(-40, 446), Vector2(2, 422), Vector2(-58, 392), Vector2(-20, 460)]:
+		_add_leafy_tree(ps.x, ps.y)
+	for pp in [Vector2(-120, 300), Vector2(-118, 342), Vector2(-116, 392),
+			Vector2(10, 272), Vector2(10, 408)]:
+		_add_palm(pp.x, pp.y)
+
 func _place_lamps() -> void:
 	var pole_m := Build.mat(Build.hex(0x1a1a1a), 0.4, 0.7)
 	for i in range(GRID + 1):
@@ -892,16 +1396,16 @@ func _place_lamps() -> void:
 			add_child(bulb)
 			lamp_mats.append(bulb_m)
 
-## The whole south-east corner is the airport island — no city, lamps or trees.
+## The airport island and its causeway — kept clear of city props.
 func _in_airport_zone(x: float, z: float) -> bool:
-	return x > 30.0 and z > 22.0
+	return on_airfield(x, z) or _on_causeway(x, z)
 
 func _build_airport() -> void:
 	var pole_m := Build.mat(Build.hex(0x1a1a1a), 0.4, 0.7)
 
-	# --- Long flat grass airfield — the runways roll out over open field, with
-	#     plenty of grass overrun ahead of every runway so a slow plane that
-	#     doesn't lift off just trundles onto grass instead of crashing. ---
+	# --- The airport island — one long grass airfield set in the bay, well south
+	#     of the city grid and the racing circuit so neither road nor track ever
+	#     crosses it. The runways roll out down the length of the island. ---
 	var grass_w: float = AIRFIELD.x1 - AIRFIELD.x0
 	var grass_d: float = AIRFIELD.z1 - AIRFIELD.z0
 	var field := Build.plane(grass_w, grass_d, Build.mat(Build.hex(0x5f7a3e), 0.95))
@@ -909,68 +1413,76 @@ func _build_airport() -> void:
 		(AIRFIELD.z0 + AIRFIELD.z1) / 2.0)
 	add_child(field)
 
-	# --- Paved apron pad by the terminal ---
-	var pad := Build.plane(84.0, 84.0, Build.mat(Build.hex(0x9a9384), 0.92))
-	pad.position = Vector3(84.0, 0.1, 80.0)               # x42..126, z38..122
-	add_child(pad)
-
-	# --- Causeway — the only land link from the city, raised over the water ---
-	var causeway := Build.box(58.0, 0.4, 12.0, Build.mat(Build.hex(0x33343a), 0.9))
-	causeway.position = Vector3(20.0, 0.2, 78.0)
+	# --- Causeway — the single land link, bridging the bay from the city shore
+	#     south to the terminal forecourt. ---
+	var cw_x := 80.0
+	var cw_z := (CAUSEWAY.z0 + CAUSEWAY.z1) / 2.0
+	var cw_len: float = CAUSEWAY.z1 - CAUSEWAY.z0
+	var causeway := Build.box(16.0, 0.4, cw_len, Build.mat(Build.hex(0x33343a), 0.9))
+	causeway.position = Vector3(cw_x, 0.2, cw_z)
 	add_child(causeway)
-	for rail_z in [72.4, 83.6]:
-		var rail := Build.box(58.0, 1.0, 0.5, Build.mat(Build.hex(0x6a6e74), 0.5, 0.4))
-		rail.position = Vector3(20.0, 0.75, rail_z)
+	for rail_x in [cw_x - 8.3, cw_x + 8.3]:
+		var rail := Build.box(0.5, 1.0, cw_len, Build.mat(Build.hex(0x6a6e74), 0.5, 0.4))
+		rail.position = Vector3(rail_x, 0.75, cw_z)
 		add_child(rail)
 	var cw_dash_m := Build.mat(Build.hex(0xd9c020), 0.85)
-	var cwx := -6.0
-	while cwx < 46.0:
-		var cwd := Build.box(2.4, 0.06, 0.3, cw_dash_m)
-		cwd.position = Vector3(cwx, 0.41, 78.0)
+	var cwz := CAUSEWAY.z0 + 4.0
+	while cwz < CAUSEWAY.z1 - 2.0:
+		var cwd := Build.box(0.3, 0.06, 2.4, cw_dash_m)
+		cwd.position = Vector3(cw_x, 0.41, cwz)
 		add_child(cwd)
-		cwx += 5.0
+		cwz += 5.0
+
+	# --- Apron — the paved expanse fronting the terminal and the runway thresholds ---
+	var apron := Build.box(160.0, 0.05, 156.0, Build.mat(Build.hex(0x4f4f58), 0.9))
+	apron.position = Vector3(155.0, 0.12, 287.0)
+	add_child(apron)
+
+	# --- Terminal forecourt — paved drop-off where cars arrive ---
+	var court := Build.box(30.0, 0.06, 52.0, Build.mat(Build.hex(0x55555e), 0.9))
+	court.position = Vector3(82.0, 0.14, 256.0)
+	add_child(court)
 
 	# --- Helipad — circular pad with a painted 'H' for the helicopter ---
 	var helipad := Build.cyl(11.0, 11.0, 0.14, 28, Build.mat(Build.hex(0x383841), 0.92))
-	helipad.position = Vector3(HELIPAD.x, 0.14, HELIPAD.z)
+	helipad.position = Vector3(HELIPAD.x, 0.2, HELIPAD.z)
 	add_child(helipad)
 	var hpaint := Build.mat(Build.hex(0xe8e8e8), 0.85)
 	for leg_dx in [-2.3, 2.3]:
 		var leg := Build.box(1.4, 0.05, 7.0, hpaint)
-		leg.position = Vector3(HELIPAD.x + leg_dx, 0.23, HELIPAD.z)
+		leg.position = Vector3(HELIPAD.x + leg_dx, 0.29, HELIPAD.z)
 		add_child(leg)
 	var crossbar := Build.box(3.2, 0.05, 1.6, hpaint)
-	crossbar.position = Vector3(HELIPAD.x, 0.23, HELIPAD.z)
+	crossbar.position = Vector3(HELIPAD.x, 0.29, HELIPAD.z)
 	add_child(crossbar)
 
-	# --- Forecourt — paved drop-off where cars arrive in front of the terminal ---
-	var court := Build.box(24.0, 0.06, 44.0, Build.mat(Build.hex(0x55555e), 0.9))
-	court.position = Vector3(50.0, 0.14, 81.0)
-	add_child(court)
+	# --- Yellow taxi guide line from the terminal frontage to the runways ---
+	var taxi_m := Build.mat(Build.hex(0xd9c020), 0.85)
+	var tlx := 134.0
+	while tlx < 224.0:
+		var td := Build.box(3.0, 0.04, 0.4, taxi_m)
+		td.position = Vector3(tlx, 0.2, 268.0)
+		add_child(td)
+		tlx += 6.0
 
-	# --- Apron / taxiways between the terminal and the runways ---
-	var apron := Build.box(58.0, 0.05, 86.0, Build.mat(Build.hex(0x4f4f58), 0.9))
-	apron.position = Vector3(98.0, 0.12, 80.0)
-	add_child(apron)
-
-	_build_terminal(63.0, 81.0)
+	_build_terminal(112.0, 255.0)
 	_build_runway(RUNWAY_A.x, RUNWAY_A.z, RUNWAY_A.len, RUNWAY_A.w)
 	_build_runway(RUNWAY_B.x, RUNWAY_B.z, RUNWAY_B.len, RUNWAY_B.w)
-	_build_control_tower(84.0, 110.0)
+	_build_control_tower(140.0, 320.0)
 
 	# --- Hangar ---
-	var hangar := Build.box(11.0, 9.0, 14.0, Build.mat(Build.hex(0x6f747a), 0.9))
-	hangar.position = Vector3(84.0, 4.5, 50.0)
+	var hangar := Build.box(13.0, 9.0, 16.0, Build.mat(Build.hex(0x6f747a), 0.9))
+	hangar.position = Vector3(195.0, 4.5, 345.0)
 	add_child(hangar)
-	buildings.append({"x": 84.0, "z": 50.0, "w": 11.0, "d": 14.0, "h": 9.0})
+	buildings.append({"x": 195.0, "z": 345.0, "w": 13.0, "d": 16.0, "h": 9.0})
 
 	# --- Tall red beacon, visible across the bay ---
 	beacon_mat = Build.emissive(Build.hex(0xff2244), Build.hex(0xff1133), 0.8)
 	beacon_node = Build.sphere(2.4, beacon_mat)
-	beacon_node.position = Vector3(122.0, 54.0, 46.0)
+	beacon_node.position = Vector3(228.0, 54.0, 240.0)
 	add_child(beacon_node)
 	var beacon_pole := Build.cyl(0.2, 0.35, 50.0, 8, pole_m)
-	beacon_pole.position = Vector3(122.0, 25.0, 46.0)
+	beacon_pole.position = Vector3(228.0, 25.0, 240.0)
 	add_child(beacon_pole)
 
 ## A runway with centreline dashes, threshold bars and edge lights.
@@ -1096,6 +1608,12 @@ func _add_mountains() -> void:
 		var az := clampf(z, AIRFIELD.z0, AIRFIELD.z1)
 		if Vector2(x - ax, z - az).length() < r + 30.0:
 			continue
+		# Keep the F1 circuit corridor clear of mountains.
+		if track != null and track.near(x, z, r + 26.0):
+			continue
+		# Keep the launch complex clear.
+		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < r + 50.0:
+			continue
 		var m := Build.cyl(0.0, r, h, 7, mtn_m)
 		m.position = Vector3(x, h / 2.0 - 12.0, z)
 		add_child(m)
@@ -1120,6 +1638,12 @@ func _add_outer_landscape() -> void:
 		var fx := clampf(x, AIRFIELD.x0, AIRFIELD.x1)
 		var fz := clampf(z, AIRFIELD.z0, AIRFIELD.z1)
 		if Vector2(x - fx, z - fz).length() < 48.0:
+			continue
+		# Keep the F1 circuit corridor clear of hills, rocks and trees.
+		if track != null and track.near(x, z, 30.0):
+			continue
+		# Keep the launch complex clear.
+		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 60.0:
 			continue
 		var pick := randi() % 3
 		if pick == 0:
@@ -1176,9 +1700,26 @@ func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 		if x > b.x - b.w / 2.0 - r and x < b.x + b.w / 2.0 + r \
 			and z > b.z - b.d / 2.0 - r and z < b.z + b.d / 2.0 + r:
 			return true
+	# Dock piers are solid footing out over the water.
+	for d in _dock_rects:
+		if x > d.x - d.w / 2.0 and x < d.x + d.w / 2.0 \
+			and z > d.z - d.d / 2.0 and z < d.z + d.d / 2.0:
+			return false
 	# The grass airfield is solid ground its full length — never sea.
 	if on_airfield(x, z):
 		return false
+	# The causeway deck spans the bay — solid footing over the water.
+	if _on_causeway(x, z):
+		return false
+	# The President's estate island and its link causeway are solid ground.
+	if _on_estate(x, z) or _on_estate_causeway(x, z):
+		return false
+	# The city river is open water — only the bridge decks carry roads across it.
+	if absf(x - RIVER_CX) < RIVER_HALF and z > -WORLD_HALF and z < WORLD_HALF \
+		and altitude < 1.5:
+		var rgf: float = fmod(z + WORLD_HALF, BLOCK)
+		if minf(rgf, BLOCK - rgf) > (ROAD_W + 2.0) / 2.0:
+			return true
 	# The sea to the south is impassable on the ground, but planes fly over it.
 	if z > WORLD_HALF + 5.0 and altitude < 5.0:
 		return true

@@ -22,6 +22,7 @@ GameState="*res://scripts/autoload/game_state.gd"
 AudioFX="*res://scripts/autoload/audio_fx.gd"
 StockMarket="*res://scripts/autoload/stock_market.gd"
 Garage="*res://scripts/autoload/garage.gd"
+RaceManager="*res://scripts/autoload/race_manager.gd"
 
 [display]
 
