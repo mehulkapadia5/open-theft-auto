@@ -6,6 +6,8 @@ extends Node3D
 # ---------------- Tuning constants (mirrors game.js) ----------------
 # Realistic car colors — black, white, silver, gunmetal, maroon, navy, dark olive.
 const VEHICLE_COLORS := [0x1b1b1d, 0xdcdcda, 0x9a9ca0, 0x4b4e54, 0x5e2a2a, 0x2b384e, 0x3a4438]
+# Street traffic skews to ordinary cars, with the odd sports car mixed in.
+const TRAFFIC_STYLES := ["sedan", "sedan", "sedan", "coupe", "coupe", "suv", "suv", "sports"]
 const NPC_SKINS := [0xf4c28a, 0xd99770, 0xa87657, 0x7a5a40]
 # Muted, earthy NPC clothing.
 const NPC_SHIRTS := [0x8a4f3e, 0x47586a, 0x586a4a, 0x9c8a64, 0x3f4a58, 0x6f6f6c, 0xb0a690, 0x5a4c46]
@@ -376,9 +378,9 @@ func _spawn_owned_vehicle(catalog_idx: int) -> void:
 		_owned_spawn.node.queue_free()
 		vehicles.erase(_owned_spawn)
 	_owned_spawn = null
-	var sx: float = CityWorld.DEALERSHIP.x + 7.0
-	var sz: float = CityWorld.DEALERSHIP.z + 2.0
-	var v := _make_vehicle(sx, sz, car.color)
+	var sx: float = CityWorld.DEALERSHIP.x
+	var sz: float = CityWorld.DEALERSHIP.z - 5.0
+	var v := _make_vehicle(sx, sz, car.color, car.style)
 	v.max_speed = car.max_speed
 	v.yaw = 0.0
 	v.node.rotation.y = v.yaw
@@ -1876,49 +1878,8 @@ func _update_pickups(dt: float) -> void:
 # =====================================================================
 # Vehicle construction
 # =====================================================================
-func _make_vehicle(x: float, z: float, color: int) -> Dictionary:
-	var g := Node3D.new()
-	var body_m := Build.mat(Build.hex(color), 0.48, 0.22)
-	var glass_m := Build.mat(Build.hex(0x0a1426), 0.08, 0.0)
-	glass_m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	glass_m.albedo_color.a = 0.85
-
-	var body := Build.box(2.0, 0.55, 4.2, body_m)
-	body.position.y = 0.55
-	g.add_child(body)
-	var hood := Build.box(1.85, 0.35, 1.6, body_m)
-	hood.position = Vector3(0, 0.95, 1.2)
-	g.add_child(hood)
-	var trunk := Build.box(1.85, 0.35, 1.3, body_m)
-	trunk.position = Vector3(0, 0.95, -1.3)
-	g.add_child(trunk)
-	var cabin := Build.box(1.7, 0.68, 1.9, glass_m)
-	cabin.position = Vector3(0, 1.3, -0.1)
-	g.add_child(cabin)
-	var roof := Build.box(1.65, 0.08, 1.4, body_m)
-	roof.position = Vector3(0, 1.68, -0.1)
-	g.add_child(roof)
-
-	var tire_m := Build.mat(Build.hex(0x0a0a0a), 0.95)
-	var rim_m := Build.mat(Build.hex(0xcccccc), 0.25, 0.95)
-	for wp in [Vector2(-1, -1.4), Vector2(1, -1.4), Vector2(-1, 1.4), Vector2(1, 1.4)]:
-		var tire := Build.cyl(0.42, 0.42, 0.38, 18, tire_m)
-		tire.rotation.z = PI / 2.0
-		tire.position = Vector3(wp.x, 0.42, wp.y)
-		g.add_child(tire)
-		var rim := Build.cyl(0.26, 0.26, 0.4, 14, rim_m)
-		rim.rotation.z = PI / 2.0
-		rim.position = Vector3(wp.x, 0.42, wp.y)
-		g.add_child(rim)
-	for hx in [-0.65, 0.65]:
-		var hl := Build.box(0.36, 0.18, 0.1, head_mat)
-		hl.position = Vector3(hx, 0.85, 2.06)
-		g.add_child(hl)
-	for tx in [-0.7, 0.7]:
-		var tl := Build.box(0.32, 0.16, 0.08, tail_mat)
-		tl.position = Vector3(tx, 0.85, -2.06)
-		g.add_child(tl)
-
+func _make_vehicle(x: float, z: float, color: int, style := "sedan") -> Dictionary:
+	var g := CarMesh.build(color, style, false, head_mat, tail_mat)
 	g.position = Vector3(x, 0, z)
 	add_child(g)
 	return {
@@ -2111,7 +2072,8 @@ func _spawn_vehicles(n: int) -> void:
 				z = -CityWorld.WORLD_HALF + gz * CityWorld.BLOCK
 			if world.collides_at(x, z, 2.0):
 				continue
-			var v := _make_vehicle(x, z, VEHICLE_COLORS.pick_random())
+			var v := _make_vehicle(x, z, VEHICLE_COLORS.pick_random(),
+				TRAFFIC_STYLES.pick_random())
 			v.yaw = 0.0 if on_x else PI / 2.0
 			v.node.rotation.y = v.yaw
 			vehicles.append(v)

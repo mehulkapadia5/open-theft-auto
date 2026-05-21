@@ -285,6 +285,7 @@ func _build_exchange(cx: float, cz: float) -> void:
 	sign_text.pixel_size = 0.012
 	sign_text.modulate = Color("06140f")
 	sign_text.outline_size = 0
+	sign_text.rotation.y = PI                                # face the plaza
 	sign_text.position = Vector3(cx, th - 7.0, tz - td / 2.0 - 0.46)
 	add_child(sign_text)
 
@@ -323,13 +324,12 @@ func _build_terminal_kiosk(x: float, z: float, prompt_text := "STOCKS  ·  PRESS
 	add_child(prompt)
 
 
-## The car dealership — a glass-fronted showroom, a forecourt, a row of display
-## cars on the lot, and the trading kiosk the player walks up to. The showroom
-## is solid; the kiosk and display cars are walk-through.
+## The car dealership — a glass-walled showroom with display cars lit up
+## inside, a forecourt with more cars (one bonnet-up), and the trading kiosk.
+## The showroom shell is solid; kiosk and display cars are walk-through.
 func _build_dealership(cx: float, cz: float) -> void:
-	var amber := Color("e6a93f")
 	var plaza_sz := BLOCK - ROAD_W
-	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0x4a4a52), 0.9))
+	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0x33343a), 0.92))
 	plaza.position = Vector3(cx, 0.07, cz)
 	add_child(plaza)
 	var trim := Build.emissive(Build.hex(0x2e2410), Build.hex(0xe6a93f), 1.0)
@@ -338,59 +338,90 @@ func _build_dealership(cx: float, cz: float) -> void:
 		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
 		add_child(strip)
 
-	# Glass-fronted showroom toward the back of the block.
+	# --- Glass showroom toward the back of the block ---
 	var sw := 16.0
-	var sd := 8.0
-	var sh := 9.0
-	var sz := cz + 4.0
-	var showroom := Build.box(sw, sh, sd, Build.mat(Build.hex(0x33414f), 0.18, 0.3))
-	showroom.position = Vector3(cx, sh / 2.0 + 0.14, sz)
-	add_child(showroom)
-	buildings.append({"x": cx, "z": sz, "w": sw, "d": sd, "h": sh})
-	var sign_panel := Build.emissive(Build.hex(0x1b1305), Build.hex(0xffc861), 2.4)
-	var sign := Build.box(13.0, 2.6, 0.4, sign_panel)
-	sign.position = Vector3(cx, sh + 1.4, sz - sd / 2.0 - 0.25)
-	add_child(sign)
+	var sd := 11.0
+	var wall_h := 5.6
+	var sz := cz + 2.5
+	var fz := sz - sd / 2.0                                  # glass front face
+
+	var steel := Build.mat(Build.hex(0x9aa0a6), 0.4, 0.7)
+	var floor := Build.emissive(Build.hex(0xb9bcc4), Build.hex(0x6a6e78), 0.5)
+	var glass := Build.mat(Build.hex(0xbfe6ec), 0.05, 0.25)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.albedo_color.a = 0.34
+
+	var plinth := Build.box(sw, 0.5, sd, Build.mat(Build.hex(0x2a2b30), 0.8))
+	plinth.position = Vector3(cx, 0.25, sz)
+	add_child(plinth)
+	var floor_mi := Build.box(sw - 0.8, 0.1, sd - 0.8, floor)
+	floor_mi.position = Vector3(cx, 0.52, sz)
+	add_child(floor_mi)
+
+	# Showroom shell — solid collision once, no matter how the glass is drawn.
+	buildings.append({"x": cx, "z": sz, "w": sw, "d": sd, "h": wall_h})
+	var back := Build.box(sw, wall_h, 0.4, Build.mat(Build.hex(0x3a3c44), 0.8))
+	back.position = Vector3(cx, wall_h / 2.0 + 0.5, sz + sd / 2.0)
+	add_child(back)
+	for side in [-1.0, 1.0]:
+		var sidewall := Build.box(0.3, wall_h - 0.4, sd - 0.5, glass)
+		sidewall.position = Vector3(cx + side * sw / 2.0, wall_h / 2.0 + 0.7, sz)
+		add_child(sidewall)
+	var front_glass := Build.box(sw - 0.6, wall_h - 0.4, 0.3, glass)
+	front_glass.position = Vector3(cx, wall_h / 2.0 + 0.7, fz)
+	add_child(front_glass)
+	# Steel posts at the corners and either side of the entrance.
+	for px in [-sw / 2.0, -2.6, 2.6, sw / 2.0]:
+		var post := Build.box(0.5, wall_h, 0.5, steel)
+		post.position = Vector3(cx + px, wall_h / 2.0 + 0.5, fz)
+		add_child(post)
+	# Flat overhanging roof + a lit ceiling so the cars inside read clearly.
+	var roof := Build.box(sw + 1.8, 0.55, sd + 1.8, Build.mat(Build.hex(0x303138), 0.85))
+	roof.position = Vector3(cx, wall_h + 0.85, sz)
+	add_child(roof)
+	var ceiling := Build.emissive(Build.hex(0xfff4d8), Build.hex(0xfff4d8), 1.4)
+	for cl in [-1.0, 0.0, 1.0]:
+		var strip := Build.box(sw - 2.0, 0.15, 1.4, ceiling)
+		strip.position = Vector3(cx, wall_h + 0.3, sz + cl * 3.0)
+		add_child(strip)
+
+	# Lit fascia + correctly-facing brand sign above the entrance.
+	var fascia := Build.emissive(Build.hex(0x1b1305), Build.hex(0xffc861), 2.4)
+	var band := Build.box(sw + 1.8, 1.7, 0.3, fascia)
+	band.position = Vector3(cx, wall_h + 1.95, fz - 0.9)
+	add_child(band)
 	var sign_text := Label3D.new()
 	sign_text.text = "VICE AUTOS"
-	sign_text.font_size = 84
-	sign_text.pixel_size = 0.013
+	sign_text.font_size = 110
+	sign_text.pixel_size = 0.011
 	sign_text.modulate = Color("1b1305")
 	sign_text.outline_size = 0
-	sign_text.position = Vector3(cx, sh + 1.4, sz - sd / 2.0 - 0.46)
+	sign_text.rotation.y = PI                                # face the forecourt
+	sign_text.position = Vector3(cx, wall_h + 1.95, fz - 1.06)
 	add_child(sign_text)
 
-	# A short row of display cars parked on raised pads out front.
-	var pad_m := Build.mat(Build.hex(0x5a5a63), 0.85)
-	var show_cols := [0xc23a3a, 0xdcdcda, 0x2b384e]
-	for i in 3:
-		var px := cx - 5.0 + i * 5.0
-		var pz := cz - 1.0
-		var pad := Build.cyl(1.9, 1.9, 0.12, 18, pad_m)
-		pad.position = Vector3(px, 0.2, pz)
-		add_child(pad)
-		_add_display_car(px, pz, show_cols[i])
+	# Two cars lit up inside on the raised showroom floor, two on the forecourt.
+	_add_display_car(cx - 3.7, sz + 0.4, 0x9a9ca0, "hyper", false, PI - 0.5, 0.44)
+	_add_display_car(cx + 3.7, sz + 0.4, 0x2b384e, "suv", false, PI + 0.5, 0.44)
+	_add_display_car(cx - 5.6, cz - 6.5, 0xc23a3a, "sports", true, 0.5)
+	_add_display_car(cx + 5.6, cz - 6.5, 0xdcdcda, "coupe", false, -0.5)
 
 	_build_terminal_kiosk(DEALERSHIP.x, DEALERSHIP.z, "VEHICLES  ·  PRESS E",
 		Color("ffc861"), Color("ffdca0"))
 
 
-## A small static car silhouette — pure decoration on the showroom lot.
-func _add_display_car(x: float, z: float, color: int) -> void:
-	var body_m := Build.mat(Build.hex(color), 0.4, 0.3)
-	var glass_m := Build.mat(Build.hex(0x0a1426), 0.1, 0.0)
-	var body := Build.box(1.9, 0.55, 4.0, body_m)
-	body.position = Vector3(x, 0.7, z)
-	add_child(body)
-	var cabin := Build.box(1.6, 0.62, 1.8, glass_m)
-	cabin.position = Vector3(x, 1.25, z - 0.1)
-	add_child(cabin)
-	var tire_m := Build.mat(Build.hex(0x0a0a0a), 0.95)
-	for wp in [Vector2(-0.95, -1.3), Vector2(0.95, -1.3), Vector2(-0.95, 1.3), Vector2(0.95, 1.3)]:
-		var tire := Build.cyl(0.4, 0.4, 0.34, 14, tire_m)
-		tire.rotation.z = PI / 2.0
-		tire.position = Vector3(x + wp.x, 0.46, z + wp.y)
-		add_child(tire)
+## A static showroom car on a low turntable pad. Uses the shared CarMesh so a
+## display car looks exactly like the real thing the player buys. `lift` raises
+## the whole thing onto the showroom's interior floor.
+func _add_display_car(x: float, z: float, color: int, style: String,
+		open_hood := false, yaw := 0.0, lift := 0.0) -> void:
+	var pad := Build.cyl(2.05, 2.05, 0.16, 24, Build.mat(Build.hex(0x4a4b52), 0.5, 0.4))
+	pad.position = Vector3(x, 0.21 + lift, z)
+	add_child(pad)
+	var car := CarMesh.build(color, style, open_hood)
+	car.position = Vector3(x, 0.29 + lift, z)
+	car.rotation.y = yaw
+	add_child(car)
 
 
 ## The Stark lab — a sleek dark tower ringed with arc-reactor blue light, where
@@ -432,6 +463,7 @@ func _build_stark_lab(cx: float, cz: float) -> void:
 	sign_text.pixel_size = 0.013
 	sign_text.modulate = Color("d8f6ff")
 	sign_text.outline_modulate = Color(0, 0, 0, 0.8)
+	sign_text.rotation.y = PI                                # face the plaza
 	sign_text.position = Vector3(cx, th - 8.0, tz - td / 2.0 - 0.3)
 	add_child(sign_text)
 
@@ -477,6 +509,7 @@ func _build_realtor(cx: float, cz: float) -> void:
 	sign_text.pixel_size = 0.013
 	sign_text.modulate = Color("0f221c")
 	sign_text.outline_size = 0
+	sign_text.rotation.y = PI                                # face the plaza
 	sign_text.position = Vector3(cx, oh + 1.3, oz - od / 2.0 - 0.46)
 	add_child(sign_text)
 
