@@ -74,8 +74,9 @@ static func build(color: int, style := "sedan", open_hood := false,
 	var p := _profile(style)
 	var g := Node3D.new()
 
-	var body_m := Build.mat(Build.hex(color), 0.38, 0.4)
-	var dark_m := Build.mat(Build.hex(0x14161b), 0.5, 0.4)
+	var body_m := Build.cmat(Build.hex(color), 0.38, 0.4)
+	var dark_m := Build.cmat(Build.hex(0x14161b), 0.5, 0.4)
+	# Glass is mutated below (alpha), so it must stay a private copy.
 	var glass_m := Build.mat(Build.hex(0x0a1426), 0.06, 0.1)
 	glass_m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	glass_m.albedo_color.a = 0.82
@@ -83,8 +84,8 @@ static func build(color: int, style := "sedan", open_hood := false,
 		head_m = Build.emissive(Build.hex(0xfff6c0), Build.hex(0xfff6c0), 0.5)
 	if tail_m == null:
 		tail_m = Build.emissive(Build.hex(0xff3030), Build.hex(0xff2020), 0.5)
-	var tire_m := Build.mat(Build.hex(0x0a0a0a), 0.95)
-	var rim_m := Build.mat(Build.hex(0xcccccc), 0.25, 0.95)
+	var tire_m := Build.cmat(Build.hex(0x0a0a0a), 0.95)
+	var rim_m := Build.cmat(Build.hex(0xcccccc), 0.25, 0.95)
 
 	var body_top: float = p.ride + p.bh / 2.0
 
@@ -123,17 +124,23 @@ static func build(color: int, style := "sedan", open_hood := false,
 	roof.position = Vector3(0, cab_y + p.cab_h / 2.0 + 0.05, p.cab_z)
 	g.add_child(roof)
 
-	# Wheels.
+	# Wheels — each pair sits on a hub pivot so the front axle can visibly
+	# steer (game.gd yaws the "front_wheels" hubs with the player's input).
+	var front_wheels: Array = []
 	for sx in [-1.0, 1.0]:
 		for sz in [-1.0, 1.0]:
+			var hub := Node3D.new()
+			hub.position = Vector3(sx * p.tire_x, p.tire_r, sz * p.tire_z)
+			g.add_child(hub)
 			var tire := Build.cyl(p.tire_r, p.tire_r, 0.36, 16, tire_m)
 			tire.rotation.z = PI / 2.0
-			tire.position = Vector3(sx * p.tire_x, p.tire_r, sz * p.tire_z)
-			g.add_child(tire)
+			hub.add_child(tire)
 			var rim := Build.cyl(p.tire_r * 0.6, p.tire_r * 0.6, 0.4, 12, rim_m)
 			rim.rotation.z = PI / 2.0
-			rim.position = Vector3(sx * p.tire_x, p.tire_r, sz * p.tire_z)
-			g.add_child(rim)
+			hub.add_child(rim)
+			if sz > 0.0:
+				front_wheels.append(hub)
+	g.set_meta("front_wheels", front_wheels)
 
 	# Lights.
 	for lx in [-0.6, 0.6]:

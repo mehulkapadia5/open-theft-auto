@@ -154,7 +154,7 @@ func _build_list() -> PanelContainer:
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 30)
 	col.add_child(head)
-	var title := _lbl("VICE BEACH EXCHANGE", 30, GOLD)
+	var title := _lbl("FREE HARBOR EXCHANGE", 30, GOLD)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)
 	_list_cash = _stat_box(head, "CASH", MONEY)

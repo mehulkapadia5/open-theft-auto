@@ -319,7 +319,7 @@ func _build_boot() -> void:
 	var title := _label("GTA VI", 124, TEXT)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
-	var tag := _label("VICE BEACH   ·   3D   ·   2026", 20, ACCENT)
+	var tag := _label("FREE HARBOR   ·   3D   ·   2026", 20, ACCENT)
 	tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(tag)
 
@@ -542,7 +542,7 @@ func _build_victory() -> void:
 	var t := _label("CITY OWNED", 110, Color("e0b24a"))
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(t)
-	var p := _label("The President is dead. Vice Beach answers to you now.",
+	var p := _label("The President is dead. Free Harbor answers to you now.",
 		24, Color(0.86, 0.86, 0.9))
 	p.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(p)

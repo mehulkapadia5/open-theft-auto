@@ -1,5 +1,5 @@
 extends Node
-## Vice Beach Exchange — a live stock-market simulation.
+## Free Harbor Exchange — a live stock-market simulation.
 ##
 ## Prices evolve continuously in real time on a fixed tick, independent of the
 ## game being paused, so the player can buy in, walk away, and come back to a

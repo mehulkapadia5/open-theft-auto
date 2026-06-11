@@ -1,6 +1,6 @@
 class_name RealtorTerminal
 extends CanvasLayer
-## Vice Realty — the safehouse property terminal.
+## Free Harbor Realty — the safehouse property terminal.
 ##
 ## A single list view of buyable safehouses. Buying a deed adds the house to
 ## the player's property; SET HOME picks which owned house is the respawn
@@ -62,7 +62,7 @@ func _build_list() -> PanelContainer:
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 30)
 	col.add_child(head)
-	var title := _lbl("VICE REALTY  ·  SAFEHOUSES", 30, TEAL)
+	var title := _lbl("FREE HARBOR REALTY  ·  SAFEHOUSES", 30, TEAL)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)
 	_list_cash = _stat_box(head, "CASH", MONEY)

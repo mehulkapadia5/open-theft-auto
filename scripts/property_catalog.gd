@@ -1,5 +1,5 @@
 class_name PropertyCatalog
-## Safehouses sold by the Vice Beach realtor.
+## Safehouses sold by the Free Harbor realtor.
 ##
 ## Each property is a real house standing in the world (world.gd builds one at
 ## every entry). Buying the deed lets the player set it as their home — the

@@ -1,5 +1,5 @@
 class_name VehicleCatalog
-## Cars sold at the Vice Beach dealership.
+## Cars sold at the Free Harbor dealership.
 ##
 ## Fields match the live vehicle dict built by Game._make_vehicle — `color` is
 ## passed straight in, `max_speed` overrides the spawned car's top speed.

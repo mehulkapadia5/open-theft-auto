@@ -1,6 +1,6 @@
 class_name DealershipTerminal
 extends CanvasLayer
-## Vice Autos — the car dealership's buying terminal.
+## Free Harbor Autos — the car dealership's buying terminal.
 ##
 ## A single list view: every car in the catalog with its class, top speed and
 ## price. Cars you don't own show a BUY button (disabled if you can't afford
@@ -64,7 +64,7 @@ func _build_list() -> PanelContainer:
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 30)
 	col.add_child(head)
-	var title := _lbl("VICE AUTOS  ·  DEALERSHIP", 30, AMBER)
+	var title := _lbl("FREE HARBOR AUTOS  ·  DEALERSHIP", 30, AMBER)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)
 	_list_cash = _stat_box(head, "CASH", MONEY)

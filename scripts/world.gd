@@ -1,6 +1,6 @@
 class_name CityWorld
 extends Node3D
-## Procedural Vice Beach city — grid roads, buildings, beach, ocean, airport.
+## Procedural Free Harbor city — grid roads, buildings, beach, ocean, airport.
 ## Mirrors buildCity()/buildAirport()/collidesAt() from the Three.js prototype.
 
 const BLOCK := 32.0                  # wide blocks so the streets are roomy
@@ -123,7 +123,7 @@ const BRIDGE_H := 4.2                # deck height of the elevated river bridges
 const ESTATE_GROUNDS := {"x0": -135.0, "x1": 18.0, "z0": 252.0, "z1": 470.0}
 const ESTATE_CAUSEWAY := {"x0": 14.0, "x1": 34.0, "z0": 330.0, "z1": 350.0}
 const PRESIDENT_HOUSE := {"x": -46.0, "z": 300.0}   # the mansion (motorcade origin)
-# Vice Space launch complex — in the north wilderness, clear of the F1 circuit.
+# Free Harbor Space launch complex — in the north wilderness, clear of the F1 circuit.
 const LAUNCH := {"x": 210.0, "z": -250.0}
 # The Moon — a grey surface built high above the world; the rocket flies up to it.
 const MOON_Y := 4000.0
@@ -136,6 +136,11 @@ const OFFICE_EXIT := {"x": 0.0, "z": -0.5}    # exit pad, and the arrival point
 const OFFICE_DESK := {"x": 0.0, "z": 8.0}     # standing spot in front of the desk
 
 var buildings: Array = []            # collision AABBs {x,z,w,d,h}
+# Spatial hash over `buildings` so collides_at() only tests nearby AABBs
+# instead of scanning the whole city. Rebuilt lazily whenever the list grows.
+const _BGRID_CELL := 24.0
+var _bgrid: Dictionary = {}
+var _bgrid_count := -1
 var docks: Array = []                # {board: Vector3 water-end, dir: Vector2}
 var _dock_rects: Array = []          # walkable pier footprints {x,z,w,d}
 var trading_floor_active := false    # true only while the player is in the office
@@ -196,7 +201,7 @@ func _add_ground() -> void:
 	add_child(beach)
 
 
-## Vice Space launch complex — a pad, gantry tower, fuel tanks and a sign. The
+## Free Harbor Space launch complex — a pad, gantry tower, fuel tanks and a sign. The
 ## rocket itself is a flyable vehicle spawned by Game.
 func _build_launch_base() -> void:
 	var cx: float = LAUNCH.x
@@ -234,7 +239,7 @@ func _build_launch_base() -> void:
 			"w": 6.4, "d": 6.4, "h": 14.0})
 
 	var sign := Label3D.new()
-	sign.text = "VICE SPACE"
+	sign.text = "FREE HARBOR SPACE"
 	sign.font_size = 130
 	sign.pixel_size = 0.02
 	sign.modulate = Color("e8e6e0")
@@ -356,7 +361,7 @@ func _build_moon_base(bx: float, bz: float, by: float) -> void:
 	dish.position = Vector3(bx, by + 9.5, bz + 12.0)
 	add_child(dish)
 	var sign := Label3D.new()
-	sign.text = "VICE  MOON  BASE"
+	sign.text = "FREE HARBOR  MOON  BASE"
 	sign.font_size = 100
 	sign.pixel_size = 0.02
 	sign.modulate = Color("cfe8ff")
@@ -367,17 +372,22 @@ func _build_moon_base(bx: float, bz: float, by: float) -> void:
 
 
 func _add_road_strip(x: float, z: float, w: float, d: float) -> void:
+	# Flat ground geometry can't cast a visible shadow — keep it out of the
+	# directional shadow pass entirely.
 	var sw := Build.box(w + 3.0, 0.04, d + 3.0, _sidewalk_mat)
 	sw.position = Vector3(x, 0.02, z)
+	sw.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(sw)
 	var r := Build.box(w, 0.05, d, _road_mat)
 	r.position = Vector3(x, 0.04, z)
+	r.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(r)
 	if w > d:
 		var i := -w / 2.0 + 2.0
 		while i < w / 2.0 - 1.0:
 			var s := Build.box(2.0, 0.06, 0.3, _stripe_mat)
 			s.position = Vector3(x + i, 0.07, z)
+			s.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			add_child(s)
 			i += 4.0
 	else:
@@ -385,11 +395,12 @@ func _add_road_strip(x: float, z: float, w: float, d: float) -> void:
 		while j < d / 2.0 - 1.0:
 			var s := Build.box(0.3, 0.06, 2.0, _stripe_mat)
 			s.position = Vector3(x, 0.07, z + j)
+			s.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			add_child(s)
 			j += 4.0
 
 func _add_building(x: float, z: float, w: float, d: float, h: float, color: int) -> void:
-	var m := Build.box(w, h, d, Build.mat(Build.hex(color), 0.84, 0.04))
+	var m := Build.box(w, h, d, Build.cmat(Build.hex(color), 0.84, 0.04))
 	m.position = Vector3(x, h / 2.0, z)
 	add_child(m)
 	# Window quads collected for one shared MultiMesh.
@@ -572,7 +583,7 @@ func _build_exchange(cx: float, cz: float) -> void:
 	sign.position = Vector3(cx, th - 7.0, tz - td / 2.0 - 0.25)
 	add_child(sign)
 	var sign_text := Label3D.new()
-	sign_text.text = "VICE BEACH\nEXCHANGE"
+	sign_text.text = "FREE HARBOR\nEXCHANGE"
 	sign_text.font_size = 84
 	sign_text.pixel_size = 0.012
 	sign_text.modulate = Color("06140f")
@@ -752,7 +763,7 @@ func _build_trading_floor() -> void:
 
 	# Branding on the inside of the skyline wall.
 	var title := Label3D.new()
-	title.text = "VICE BEACH EXCHANGE"
+	title.text = "FREE HARBOR EXCHANGE"
 	title.font_size = 64
 	title.pixel_size = 0.008
 	title.modulate = Color("cdeee2")
@@ -841,7 +852,7 @@ func _build_dealership(cx: float, cz: float) -> void:
 	band.position = Vector3(cx, wall_h + 1.95, fz - 0.9)
 	add_child(band)
 	var sign_text := Label3D.new()
-	sign_text.text = "VICE AUTOS"
+	sign_text.text = "FREE HARBOR AUTOS"
 	sign_text.font_size = 110
 	sign_text.pixel_size = 0.011
 	sign_text.modulate = Color("1b1305")
@@ -1132,7 +1143,7 @@ func _build_realtor(cx: float, cz: float) -> void:
 	sign.position = Vector3(cx, oh + 1.3, oz - od / 2.0 - 0.25)
 	add_child(sign)
 	var sign_text := Label3D.new()
-	sign_text.text = "VICE REALTY"
+	sign_text.text = "FREE HARBOR REALTY"
 	sign_text.font_size = 80
 	sign_text.pixel_size = 0.013
 	sign_text.modulate = Color("0f221c")
@@ -2162,8 +2173,23 @@ func _build_window_multimesh() -> void:
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	mmi.material_override = window_mat
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mmi)
 	_window_xforms.clear()
+
+func _rebuild_building_grid() -> void:
+	_bgrid.clear()
+	for b in buildings:
+		for cx in range(int(floor((b.x - b.w / 2.0) / _BGRID_CELL)),
+				int(floor((b.x + b.w / 2.0) / _BGRID_CELL)) + 1):
+			for cz in range(int(floor((b.z - b.d / 2.0) / _BGRID_CELL)),
+					int(floor((b.z + b.d / 2.0) / _BGRID_CELL)) + 1):
+				var key := Vector2i(cx, cz)
+				if not _bgrid.has(key):
+					_bgrid[key] = []
+				_bgrid[key].append(b)
+	_bgrid_count = buildings.size()
+
 
 func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 	# Inside the trading-floor office only its own glass walls block the player;
@@ -2176,12 +2202,17 @@ func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 					and z > w.z - w.d / 2.0 - r and z < w.z + w.d / 2.0 + r:
 					return true
 			return false
-	for b in buildings:
-		if altitude > b.h + 2.0:
-			continue
-		if x > b.x - b.w / 2.0 - r and x < b.x + b.w / 2.0 + r \
-			and z > b.z - b.d / 2.0 - r and z < b.z + b.d / 2.0 + r:
-			return true
+	if buildings.size() != _bgrid_count:
+		_rebuild_building_grid()
+	for cx in range(int(floor((x - r) / _BGRID_CELL)), int(floor((x + r) / _BGRID_CELL)) + 1):
+		for cz in range(int(floor((z - r) / _BGRID_CELL)), int(floor((z + r) / _BGRID_CELL)) + 1):
+			var cell: Array = _bgrid.get(Vector2i(cx, cz), [])
+			for b in cell:
+				if altitude > b.h + 2.0:
+					continue
+				if x > b.x - b.w / 2.0 - r and x < b.x + b.w / 2.0 + r \
+					and z > b.z - b.d / 2.0 - r and z < b.z + b.d / 2.0 + r:
+					return true
 	# Dock piers are solid footing out over the water.
 	for d in _dock_rects:
 		if x > d.x - d.w / 2.0 and x < d.x + d.w / 2.0 \
