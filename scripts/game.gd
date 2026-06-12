@@ -236,8 +236,11 @@ func _setup_environment() -> void:
 	env.ambient_light_energy = 0.6
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = true
-	env.fog_density = 0.0007
+	env.fog_density = 0.0011
 	env.fog_sky_affect = 0.2
+	# Aerial perspective — distant coastline and sea haze into the sky instead
+	# of presenting a hard horizon line.
+	env.fog_aerial_perspective = 0.5
 
 	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true

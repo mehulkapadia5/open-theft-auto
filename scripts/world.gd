@@ -9,6 +9,9 @@ const ROAD_W := 15.0                 # broad multi-lane roads
 const WORLD := BLOCK * GRID          # 352 — the dense city core
 const WORLD_HALF := WORLD / 2.0      # 176
 const OUTER_HALF := WORLD_HALF + 250.0   # wide green wilderness ring around the city
+const LAND_HALF := OUTER_HALF + 380.0    # 806 — where the landmass meets the sea;
+                                         # roomy enough that the mountain ring
+                                         # (bases out to ~620+150) stays ashore
 
 # Airport island — a grass airfield in the bay south of the city, reached by a
 # single causeway. Kept entirely clear of the city grid and the racing circuit.
@@ -180,25 +183,51 @@ func generate() -> void:
 	add_child(track)
 	track.build()
 	_add_mountains()
+	_add_suburbs()
 	_add_outer_landscape()
 	_add_clouds(45)
 	_build_window_multimesh()
 
 func _add_ground() -> void:
+	# Endless sea out to the horizon in every direction — the landmass is an
+	# island, so no view from altitude ever finds the edge of the world.
+	var sea_m := Build.cmat(Build.hex(0x355767), 0.38, 0.22)
+	var horizon := Build.plane(16000.0, 16000.0, sea_m)
+	horizon.position = Vector3(0, -0.25, 0)
+	horizon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(horizon)
 	# Vast outer terrain so the world isn't boxed in by the city.
-	var outer := Build.plane(OUTER_HALF * 2.0 + 240.0, OUTER_HALF * 2.0 + 240.0,
+	var outer := Build.plane(LAND_HALF * 2.0, LAND_HALF * 2.0,
 		Build.mat(Build.hex(0x6a7340), 0.95))
 	outer.position = Vector3(0, -0.04, 0)
+	outer.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(outer)
 	var ground := Build.plane(WORLD, WORLD, Build.mat(Build.hex(0x586b42), 0.9))
+	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ground)
-	var ocean := Build.plane(OUTER_HALF * 2.0 + 600.0, 700.0,
-		Build.mat(Build.hex(0x355767), 0.38, 0.22))
+	var ocean := Build.plane(LAND_HALF * 2.0 + 360.0, 700.0, sea_m)
 	ocean.position = Vector3(0, -0.02, WORLD_HALF + 320.0)
+	ocean.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ocean)
-	var beach := Build.plane(WORLD, 30.0, Build.mat(Build.hex(0xd6c79c), 1.0))
+	var sand_m := Build.cmat(Build.hex(0xd6c79c), 1.0)
+	# The city's south shore beach, running the full width of the landmass.
+	var beach := Build.plane(LAND_HALF * 2.0, 30.0, sand_m)
 	beach.position = Vector3(0, 0.01, WORLD_HALF - 5.0)
+	beach.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(beach)
+	# Sand rims along the landmass's north, east and west coasts so the grass
+	# never knife-edges into the sea.
+	for rim in [
+		{"w": LAND_HALF * 2.0 + 52.0, "d": 26.0, "x": 0.0, "z": -LAND_HALF},
+		{"w": 26.0, "d": LAND_HALF + WORLD_HALF + 26.0,
+			"x": LAND_HALF, "z": (WORLD_HALF - LAND_HALF) / 2.0},
+		{"w": 26.0, "d": LAND_HALF + WORLD_HALF + 26.0,
+			"x": -LAND_HALF, "z": (WORLD_HALF - LAND_HALF) / 2.0},
+	]:
+		var strip := Build.plane(rim.w, rim.d, sand_m)
+		strip.position = Vector3(rim.x, -0.03, rim.z)
+		strip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(strip)
 
 
 ## Free Harbor Space launch complex — a pad, gantry tower, fuel tanks and a sign. The
@@ -2071,6 +2100,8 @@ func _add_mountains() -> void:
 		# Offset the distance by the mountain's own radius so its base never
 		# reaches into the city core — the near edge sits >=30 m past the city.
 		var dist := WORLD_HALF + r + 30.0 + randf() * 260.0
+		# Keep the whole base on the landmass — no peak may overhang the sea.
+		dist = minf(dist, LAND_HALF - r - 12.0)
 		var x := cos(ang) * dist
 		var z := sin(ang) * dist
 		if z > WORLD_HALF + 20.0:        # keep the southern sea clear
@@ -2103,11 +2134,81 @@ func _add_mountains() -> void:
 		if dist < OUTER_HALF:
 			buildings.append({"x": x, "z": z, "w": r * 1.1, "d": r * 1.1, "h": h})
 
-## Hills, groves and rocks scattered across the wilderness around the city.
-func _add_outer_landscape() -> void:
-	for i in 110:
+## A low-density housing belt in the green ring around the city, so building
+## density falls off downtown -> suburbs -> countryside instead of cliffing
+## from towers straight into empty wilderness.
+func _add_suburbs() -> void:
+	var made := 0
+	for i in 320:
+		if made >= 72:
+			break
 		var ang := randf() * TAU
-		var dist := WORLD_HALF + 22.0 + randf() * (OUTER_HALF - WORLD_HALF - 36.0)
+		var dist := WORLD_HALF + 34.0 + randf() * (OUTER_HALF - WORLD_HALF - 60.0)
+		var x := cos(ang) * dist
+		var z := sin(ang) * dist
+		if z > WORLD_HALF - 16.0:
+			continue                     # keep the shoreline, beach and bay clear
+		# Keep a margin off the city square (its corners reach past a radial test).
+		var csx := clampf(x, -WORLD_HALF, WORLD_HALF)
+		var csz := clampf(z, -WORLD_HALF, WORLD_HALF)
+		if Vector2(x - csx, z - csz).length() < 26.0:
+			continue
+		var fx := clampf(x, AIRFIELD.x0, AIRFIELD.x1)
+		var fz := clampf(z, AIRFIELD.z0, AIRFIELD.z1)
+		if Vector2(x - fx, z - fz).length() < 40.0:
+			continue
+		if track != null and track.near(x, z, 26.0):
+			continue
+		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 70.0:
+			continue
+		# Mountains, other houses, trees — anything already solid blocks the lot.
+		if collides_at(x, z, 14.0):
+			continue
+		_add_house(x, z, randf() * TAU)
+		made += 1
+
+## A small suburban villa — stucco box under a pyramid roof, with a yard tree.
+func _add_house(x: float, z: float, yaw: float) -> void:
+	var w := 6.0 + randf() * 3.5
+	var d := 7.0 + randf() * 4.0
+	var h := 3.6 + randf() * 2.2
+	var house := Node3D.new()
+	house.position = Vector3(x, 0, z)
+	house.rotation.y = yaw
+	add_child(house)
+	var body := Build.box(w, h, d, Build.cmat(Build.hex(VILLA_PALETTE.pick_random()), 0.84, 0.04))
+	body.position.y = h / 2.0
+	house.add_child(body)
+	var roof_r := Vector2(w, d).length() * 0.62
+	var roof := Build.cyl(0.05, roof_r, 2.4, 4, Build.cmat(Build.hex(ROOF_PALETTE.pick_random()), 0.9))
+	roof.position.y = h + 1.2
+	roof.rotation.y = PI / 4.0
+	house.add_child(roof)
+	var door := Build.box(1.1, 2.1, 0.12, Build.cmat(Build.hex(0x4a3424), 0.8))
+	door.position = Vector3(0, 1.05, d / 2.0 + 0.04)
+	house.add_child(door)
+	# Windows flanking the door and on the back wall, sharing the city's
+	# day/night-modulated glass so they glow with the skyline after dark.
+	for sx in [-1.0, 1.0]:
+		for sz in [1.0, -1.0]:
+			var win := Build.box(1.2, 1.1, 0.08, window_mat)
+			win.position = Vector3(sx * w * 0.27, h * 0.55, sz * (d / 2.0 + 0.03))
+			house.add_child(win)
+	# One collision square covering the rotated footprint.
+	var rr := maxf(w, d) + 0.8
+	buildings.append({"x": x, "z": z, "w": rr, "d": rr, "h": h + 2.4})
+	if randf() < 0.7:
+		var ta := randf() * TAU
+		var td := rr / 2.0 + 4.0 + randf() * 6.0
+		_add_leafy_tree(x + cos(ta) * td, z + sin(ta) * td)
+
+## Hills, groves and rocks scattered across the wilderness around the city —
+## and on across the whole outer plain so the countryside runs unbroken from
+## the city ring to the coast.
+func _add_outer_landscape() -> void:
+	for i in 220:
+		var ang := randf() * TAU
+		var dist := WORLD_HALF + 22.0 + randf() * (LAND_HALF - 70.0 - WORLD_HALF)
 		var x := cos(ang) * dist
 		var z := sin(ang) * dist
 		if z > WORLD_HALF - 4.0:
@@ -2127,6 +2228,9 @@ func _add_outer_landscape() -> void:
 			continue
 		# Keep the launch complex clear.
 		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 60.0:
+			continue
+		# Don't clip into mountains, suburb houses or anything else solid.
+		if collides_at(x, z, 16.0):
 			continue
 		var pick := randi() % 3
 		if pick == 0:
