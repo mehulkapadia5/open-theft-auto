@@ -112,7 +112,8 @@ func sell(idx: int, shares: float) -> float:
 	if shares <= 0.0:
 		return 0.0
 	var avg: float = s.spent / s.owned
-	GameState.money += int(round(shares * s.price))
+	# Floor, not round: rounding up lets tiny repeated sells mint free dollars.
+	GameState.money += int(floor(shares * s.price))
 	s.spent = maxf(0.0, s.spent - avg * shares)
 	s.owned -= shares
 	if s.owned <= 0.0001:

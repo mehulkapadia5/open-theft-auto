@@ -203,6 +203,22 @@ func _build_row(idx: int) -> PanelContainer:
 	row.add_theme_constant_override("separation", 16)
 	wrap.add_child(row)
 
+	# Sector colour badge (symbol initial on a coloured tile).
+	var badge := PanelContainer.new()
+	var bsb := StyleBoxFlat.new()
+	bsb.bg_color = _sector_color(idx)
+	bsb.set_corner_radius_all(6)
+	badge.add_theme_stylebox_override("panel", bsb)
+	badge.custom_minimum_size = Vector2(40, 40)
+	var bl := _lbl(s.symbol.substr(0, 1), 22, Color(0.06, 0.07, 0.09))
+	bl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	badge.add_child(bl)
+	var bwrap := CenterContainer.new()
+	bwrap.custom_minimum_size = Vector2(48, 0)
+	bwrap.add_child(badge)
+	row.add_child(bwrap)
+
 	# Clickable ticker (symbol + name) -> detail page.
 	var tick := VBoxContainer.new()
 	tick.custom_minimum_size = Vector2(W_TICK, 0)
@@ -215,6 +231,11 @@ func _build_row(idx: int) -> PanelContainer:
 			and e.button_index == MOUSE_BUTTON_LEFT:
 			_show_detail(idx))
 	row.add_child(tick)
+
+	# Live sparkline of recent price history.
+	var spark := Chart.new()
+	spark.custom_minimum_size = Vector2(150, 44)
+	row.add_child(spark)
 
 	var price := _cell("", W_PRICE, TEXT, 21, HORIZONTAL_ALIGNMENT_RIGHT)
 	row.add_child(price)
@@ -246,8 +267,18 @@ func _build_row(idx: int) -> PanelContainer:
 
 	_list_rows.append({
 		"price": price, "chg": chg, "sig": sig, "hold": hold, "sell": sell,
+		"spark": spark,
 	})
 	return wrap
+
+
+## A fixed colour per stock for its sector badge.
+func _sector_color(idx: int) -> Color:
+	var pal := [
+		Color("c0392b"), Color("2980b9"), Color("e0ad28"), Color("8e6f3e"),
+		Color("27ae60"), Color("7f8fa6"), Color("9b59b6"), Color("d35400"),
+	]
+	return pal[idx % pal.size()]
 
 
 # ---------------- Detail view ----------------
@@ -375,6 +406,7 @@ func open() -> void:
 	_open = true
 	_root.visible = true
 	_show_list()
+	UiNav.apply.call_deferred(_root)
 
 
 func _close() -> void:
@@ -391,6 +423,7 @@ func _show_list() -> void:
 	_detail_view.visible = false
 	_order_view.visible = false
 	_refresh()
+	UiNav.apply.call_deferred(_list_view)
 
 
 func _show_detail(idx: int) -> void:
@@ -400,6 +433,7 @@ func _show_detail(idx: int) -> void:
 	_detail_view.visible = true
 	_order_view.visible = false
 	_refresh()
+	UiNav.apply.call_deferred(_detail_view)
 
 
 func _open_order(idx: int, kind: String) -> void:
@@ -425,12 +459,20 @@ func _open_order(idx: int, kind: String) -> void:
 			_o_quick[i].text = labs[i]
 		_o_place.text = "PLACE SELL ORDER"
 	_order_view.visible = true
+	# The ticket is modal: fence off the buttons underneath it (the dim rect
+	# only blocks the mouse) and move focus onto the ticket.
+	UiNav.set_focusable(_list_view, false)
+	UiNav.set_focusable(_detail_view, false)
 	_refresh()
+	UiNav.apply.call_deferred(_order_view)
 
 
 func _close_order() -> void:
 	_order_view.visible = false
+	UiNav.set_focusable(_list_view, true)
+	UiNav.set_focusable(_detail_view, true)
 	_refresh()
+	UiNav.apply.call_deferred(_detail_view if _mode == "detail" else _list_view)
 
 
 func _quick(i: int) -> void:
@@ -451,20 +493,38 @@ func _place_order() -> void:
 	var s: Dictionary = StockMarket.stocks[_order_idx]
 	var done := false
 	if _order_kind == "buy":
-		var cash := clampi(int(_o_input.text.to_float()), 0, GameState.money)
+		var cash := clampi(int(_num(_o_input.text)), 0, GameState.money)
 		done = StockMarket.buy_with_cash(_order_idx, cash) > 0.0
 	else:
-		var shares := _o_input.text.to_float()
-		if shares >= s.owned * 0.995:
-			shares = s.owned                     # treat near-full as sell-all
+		var shares := _num(_o_input.text)
+		if shares >= s.owned - 0.0001:
+			shares = s.owned         # absorb float noise from the MAX fill only
 		done = StockMarket.sell(_order_idx, shares) > 0.0
 	if done:
 		AudioFX.coin()
 		_close_order()
 
 
+## Parse a typed amount, tolerating "1,500", "1 500" and "$100" — to_float()
+## alone stops at the first separator and would silently truncate the order.
+func _num(t: String) -> float:
+	return t.replace(",", "").replace(" ", "").replace("_", "") \
+		.replace("$", "").to_float()
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not _open:
+		return
+	# Circle (B) steps back one level, same as Escape.
+	if event is InputEventJoypadButton and event.pressed \
+		and event.button_index == JOY_BUTTON_B:
+		if _order_view.visible:
+			_close_order()
+		elif _mode == "detail":
+			_show_list()
+		else:
+			_close()
+		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
@@ -506,6 +566,7 @@ func _refresh_list() -> void:
 		r.price.text = "$" + _price_str(s.price)
 		r.chg.text = _pct_str(s)
 		r.chg.add_theme_color_override("font_color", tint)
+		r.spark.set_series(s.history, s.open, tint)
 		match s.mode:
 			"rally":
 				r.sig.text = "RALLY"
@@ -559,7 +620,7 @@ func _refresh_order() -> void:
 	if _order_kind == "buy":
 		_o_avail.text = "Cash $%s   ·   Portfolio $%s" \
 			% [_commas(GameState.money), _commas(StockMarket.portfolio_value())]
-		var cash := clampi(int(_o_input.text.to_float()), 0, GameState.money)
+		var cash := clampi(int(_num(_o_input.text)), 0, GameState.money)
 		var shares: float = float(cash) / s.price if s.price > 0.0 else 0.0
 		_o_result.text = "Buys  ≈ %s shares" % _shares_str(shares)
 		_o_total.text = "ORDER TOTAL   $" + _commas(cash)
@@ -567,7 +628,7 @@ func _refresh_order() -> void:
 	else:
 		_o_avail.text = "You hold %s shares  ·  worth $%s" \
 			% [_shares_str(s.owned), _commas(int(round(s.owned * s.price)))]
-		var shares: float = clampf(_o_input.text.to_float(), 0.0, s.owned)
+		var shares: float = clampf(_num(_o_input.text), 0.0, s.owned)
 		var proceeds := int(round(shares * s.price))
 		_o_result.text = "Sells  ≈ %s shares" % _shares_str(shares)
 		_o_total.text = "PROCEEDS   $" + _commas(proceeds)

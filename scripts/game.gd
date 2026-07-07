@@ -33,6 +33,7 @@ var touch_hud: TouchHUD          # on-screen joystick + buttons on mobile only
 var phone                        # the phone menu (loaded by path, see _ready)
 var phone_open := false          # true while the phone menu is on screen
 var terminal_open := false       # true while any kiosk terminal is on screen
+var pause_menu: PauseMenu        # Escape / pad Start — resume, controls, exit
 var _near_exchange := false      # on foot and within reach of the exchange kiosk
 var _near_dealership := false    # on foot and within reach of the dealership kiosk
 var _near_stark := false         # on foot and within reach of the Stark lab kiosk
@@ -60,10 +61,12 @@ var player_max_armor := 100.0
 var cam_yaw := 0.0
 var cam_pitch := 0.3
 var cam_dist := 6.5
+var _shake_amt := 0.0            # current camera-shake intensity, decays each frame
 var _walk_vel := Vector2.ZERO    # smoothed on-foot velocity (x, z)
 var aiming := false          # on foot, holding Space: first-person zoomed aim
 const CAM_FOV_HIP := 70.0
 const CAM_FOV_AIM := 32.0
+const CAM_FOV_SNIPER := 10.0     # the sniper zooms in much further than iron sights
 
 # ---------------- Entity pools ----------------
 var vehicles: Array = []
@@ -132,6 +135,7 @@ var _convoy_form := 0.0          # seconds settled in a car — the convoy forms
 var race_rank := 1               # player's current circuit position
 var race_total := 1
 var _player_prog := 0.0          # player's monotonic race progress (centreline steps)
+var _player_prev_idx := 0        # last frame's nearest centreline index (unwrap)
 var _mouse_rel := Vector2.ZERO
 const VIP_TARGET := 4            # VIPs are unlimited — kept topped up to this many
 
@@ -165,7 +169,8 @@ func _ready() -> void:
 	add_child(player_node)
 	var limbs: Dictionary = player_node.get_meta("limbs")
 	weapon_holder = Node3D.new()
-	weapon_holder.position = Vector3(0.0, -0.86, 0.18)
+	# armR is bone-attached to the right hand now, so the weapon sits at the hand.
+	weapon_holder.position = Vector3(0.0, 0.0, 0.0)
 	limbs.armR.add_child(weapon_holder)
 	_refresh_weapon_model()
 
@@ -178,6 +183,7 @@ func _ready() -> void:
 	hud = HUD.new()
 	add_child(hud)
 	hud.start_pressed.connect(_on_start)
+	hud.new_game_pressed.connect(func() -> void: SaveGame.clear(); _on_start())
 	hud.respawn_pressed.connect(_respawn)
 
 	stock_terminal = StockTerminal.new()
@@ -188,6 +194,10 @@ func _ready() -> void:
 	add_child(phone)
 	phone.closed.connect(_on_phone_closed)
 	phone.action.connect(_on_phone_action)
+
+	pause_menu = PauseMenu.new()
+	add_child(pause_menu)
+	pause_menu.resumed.connect(_on_pause_resumed)
 
 	dealership_terminal = DealershipTerminal.new()
 	add_child(dealership_terminal)
@@ -236,15 +246,18 @@ func _setup_environment() -> void:
 	env.ambient_light_energy = 0.6
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = true
-	env.fog_density = 0.0011
-	env.fog_sky_affect = 0.2
+	# A touch heavier than stock for the warm LA smog-haze on distant blocks,
+	# but kept light enough that aerial / flying views stay readable.
+	env.fog_density = 0.0013
+	env.fog_sky_affect = 0.22
 	# Aerial perspective — distant coastline and sea haze into the sky instead
 	# of presenting a hard horizon line.
 	env.fog_aerial_perspective = 0.5
 
 	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true
-	sun.light_energy = 1.0
+	sun.light_energy = 1.05
+	sun.light_color = Color(1.0, 0.94, 0.82)   # warm California sunlight
 	sun.rotation = Vector3(deg_to_rad(-55.0), 0.7, 0.0)
 	add_child(sun)
 
@@ -307,9 +320,15 @@ func _on_start() -> void:
 	my_convoy.clear()
 	_convoy_form = 0.0
 	_build_convoy_route()
+	# Resume a saved game if one exists — overrides the fresh-reset defaults with
+	# the player's money, weapons, owned cars, suit tier, properties and stocks.
+	if SaveGame.has_save():
+		SaveGame.load_into()
+		_refresh_weapon_model()
+		_refresh_suit_model()    # pad suit was built at tier 1 before the load
 	hud.enter_game()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby - press V to call it to you from anywhere, or step onto it, to fly. Downtown is the place to spend: STOCK EXCHANGE, FREE HARBOR AUTOS (cars), STARK INDUSTRIES (suit upgrades) and FREE HARBOR REALTY (safehouses) - press E at each kiosk.", 11.0)
+	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby, ready to fly. Downtown is the place to spend: STOCK EXCHANGE, FREE HARBOR AUTOS (cars), STARK INDUSTRIES (suit upgrades) and FREE HARBOR REALTY (safehouses).", 11.0)
 
 
 func _die() -> void:
@@ -327,6 +346,8 @@ func _respawn() -> void:
 	if space_state != "":
 		space_state = ""
 		_set_space_sky(false)
+		AudioFX.rocket_engine_stop()
+		AudioFX.wind_stop()
 	for c in cops:
 		c.node.queue_free()
 	cops.clear()
@@ -359,6 +380,7 @@ func _respawn() -> void:
 	player_hp = player_max_hp
 	player_armor = 0.0
 	in_car = null
+	cam_dist = 6.5           # not the heli/rocket chase distance we died with
 	_near_exchange = false
 	_near_dealership = false
 	_near_stark = false
@@ -385,40 +407,115 @@ func _respawn() -> void:
 # =====================================================================
 # Input
 # =====================================================================
+# One-shot actions dispatched from a single press. Everything else (movement,
+# sprint, aim, fire, handbrake, fly up/down...) is read continuously via
+# Input.is_action_pressed() in the shim functions below, so it naturally
+# tracks whatever InputConfig has bound at the time.
+const DISCRETE_ACTIONS := [
+	"interact", "enter_exit", "summon_suit", "phone", "mute",
+	"restock_respawn", "race_terminal", "weapon_next", "weapon_prev",
+]
+
 func _input(event: InputEvent) -> void:
+	InputConfig.note_event(event)   # tracks kb-vs-pad for the controls screen's auto tab
 	if event is InputEventMouseMotion:
 		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			_mouse_rel += event.relative
+		return
+	# Controller UI actions that must work while the game is paused or on the
+	# title / death screen (the keyboard equivalents live behind the guard below).
+	if event is InputEventJoypadButton and event.pressed:
+		if not GameState.started:
+			# With a save on disk the boot screen shows CONTINUE / NEW GAME and
+			# UiNav gives them gamepad focus — let A (ui_accept) reach the
+			# focused button instead of force-continuing, or NEW GAME would be
+			# unreachable without a mouse. START stays a quick "continue".
+			if SaveGame.has_save():
+				if event.button_index == JOY_BUTTON_START:
+					Gamepad.pulse(0.0, 0.4, 0.12)
+					_on_start()
+					get_viewport().set_input_as_handled()
+					return
+			elif event.button_index in [JOY_BUTTON_A, JOY_BUTTON_START, JOY_BUTTON_X]:
+				Gamepad.pulse(0.0, 0.4, 0.12)
+				_on_start()
+				get_viewport().set_input_as_handled()
+				return
+		elif GameState.paused and player_hp <= 0.0:
+			if event.button_index == JOY_BUTTON_A:
+				_respawn()
+				get_viewport().set_input_as_handled()
+				return
+		elif GameState.started and not GameState.paused and event.button_index == JOY_BUTTON_START:
+			# Options — pause menu, like a proper game. Phone moved off Start
+			# (now Share/Back) so the two can't collide.
+			_open_pause_menu()
+			get_viewport().set_input_as_handled()
+			return
+	# The death screen advertises "R respawn" — honour it even though the game
+	# is paused (death sets paused=true, which the guard below rejects).
+	if event is InputEventKey and event.pressed and not event.echo \
+			and event.keycode == KEY_R \
+			and GameState.started and GameState.paused and player_hp <= 0.0:
+		_respawn()
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventKey and event.pressed and not event.echo \
+			and event.keycode == KEY_ESCAPE \
+			and GameState.started and not GameState.paused:
+		_open_pause_menu()
+		get_viewport().set_input_as_handled()
 		return
 	if not GameState.started or GameState.paused:
 		return
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			# The recapture click must not also discharge the weapon this
+			# frame — _update_shooting polls the (now captured) mouse button.
+			last_fire_at = _now
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and in_car == null:
 			_switch_weapon(1)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP and in_car == null:
 			_switch_weapon(-1)
 		return
+	if event is InputEventJoypadButton and event.pressed:
+		Gamepad.pulse(0.08, 0.0, 0.03)        # subtle tactile tick on every press
+		_handle_pad_extra(event.button_index)
+		_dispatch_discrete(event)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
-		_handle_key(event.keycode)
+		if event.keycode >= KEY_1 and event.keycode <= KEY_9:
+			_select_weapon(event.keycode - KEY_1)
+		else:
+			_dispatch_discrete(event)
 		# Consume the key so it can't also reach the trading terminal's own
 		# close handler on the same frame it was opened.
 		get_viewport().set_input_as_handled()
 
 
-func _handle_key(keycode: int) -> void:
-	match keycode:
-		KEY_F:
-			if suit_state == "on":
-				_unsuit()
-			elif suit_state == "none" and not in_trading_floor:
+## Match a key/mouse/joypad press against every rebindable one-shot action
+## and fire the first one whose current binding matches.
+func _dispatch_discrete(event: InputEvent) -> void:
+	for a in DISCRETE_ACTIONS:
+		if event.is_action_pressed(InputConfig.action_id(a)):
+			_handle_action(a)
+			return
+
+
+func _handle_action(name: String) -> void:
+	match name:
+		"enter_exit":
+			if suit_state != "none":
+				_unsuit()                       # power down from ANY suit state
+			elif not in_trading_floor:
 				_try_enter_exit()
-		KEY_V:
+		"summon_suit":
 			if suit_state == "none" and in_car == null and not parachuting \
 				and not terminal_open and not in_trading_floor:
 				_summon_suit()
-		KEY_E:
+		"interact":
 			if terminal_open or in_car != null \
 				or suit_state != "none" or parachuting:
 				return
@@ -435,72 +532,127 @@ func _handle_key(keycode: int) -> void:
 				_open_stark()
 			elif _near_realtor:
 				_open_realtor()
-		KEY_G:
+		"race_terminal":
 			if not terminal_open and _near_paddock and not RaceManager.is_active():
 				_open_race_terminal()
-		KEY_P:
+		"phone":
 			if not terminal_open and not phone_open:
 				_open_phone()
-		KEY_Q, KEY_TAB:
-			_switch_weapon(1)
-		KEY_Z:
-			_switch_weapon(-1)
-		KEY_R:
+		"weapon_next":
+			# Guarded on foot / suit-down so it can't also cycle weapons while
+			# L1 (the same physical button, suited) is being held to fire
+			# missiles — see _altfire_held.
+			if in_car == null and suit_state != "on":
+				_switch_weapon(1)
+		"weapon_prev":
+			if in_car == null and suit_state != "on":
+				_switch_weapon(-1)
+		"restock_respawn":
 			if player_hp > 0:
 				player_hp = player_max_hp
 				GameState.init_weapon_ammo()
 				_show_objective("Full HP + ammo restocked")
 			else:
 				_respawn()
-		KEY_M:
+		"mute":
 			AudioFX.set_muted(not AudioFX.is_muted())
 			_show_objective("Muted" if AudioFX.is_muted() else "Sound on")
-		KEY_ESCAPE:
-			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-			else:
-				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-		_:
-			if keycode >= KEY_1 and keycode <= KEY_9:
-				_select_weapon(keycode - KEY_1)
 
 
-func _key(k: int) -> bool:
-	return Input.is_physical_key_pressed(k)
+# D-pad left/right stay a fixed, non-rebindable secondary weapon switch
+# (redundant with the shoulder buttons) — everything else pad-side now goes
+# through InputConfig's actions via _dispatch_discrete above.
+func _handle_pad_extra(idx: int) -> void:
+	match idx:
+		JOY_BUTTON_DPAD_RIGHT:
+			if in_car == null:
+				_switch_weapon(1)
+		JOY_BUTTON_DPAD_LEFT:
+			if in_car == null:
+				_switch_weapon(-1)
 
 
-# Movement / fire input shims — combine keyboard with the mobile touch HUD so
-# the rest of the game has one read path regardless of platform.
+func _action_held(name: String) -> bool:
+	return Input.is_action_pressed(InputConfig.action_id(name))
+
+
+# Tap-buttons on the touch HUD route through the same action handler as
+# keyboard/pad so every interaction has exactly one code path.
+func _on_touch_action(name: StringName) -> void:
+	match name:
+		&"interact": _handle_action("interact")
+		&"suit":     _handle_action("enter_exit")
+		&"summon":   _handle_action("summon_suit")
+
+
+# Movement / fire input shims — combine keyboard (via InputConfig's rebindable
+# actions) with the mobile touch HUD and the Gamepad autoload's sticks/
+# triggers, so the rest of the game has one read path regardless of platform.
 func _move_x() -> float:
-	var v := (1.0 if _key(KEY_D) else 0.0) - (1.0 if _key(KEY_A) else 0.0)
+	var v := (1.0 if _action_held("move_right") else 0.0) - (1.0 if _action_held("move_left") else 0.0)
 	if touch_hud != null:
 		v += touch_hud.stick.x
+	v += Gamepad.move().x            # left stick — strafe / steer
 	return clampf(v, -1.0, 1.0)
 
 
 func _move_z() -> float:
-	var v := (1.0 if _key(KEY_W) else 0.0) - (1.0 if _key(KEY_S) else 0.0)
+	var v := (1.0 if _action_held("move_forward") else 0.0) - (1.0 if _action_held("move_back") else 0.0)
 	if touch_hud != null:
 		v += touch_hud.stick.y
+	v -= Gamepad.move().y            # stick Y is +down; forward is up = negative
 	return clampf(v, -1.0, 1.0)
 
 
 func _sprint_held() -> bool:
-	return _key(KEY_SHIFT) or (touch_hud != null and touch_hud.sprint_held)
+	# Cross (A) on foot sprints; in a vehicle the same button boosts. Fixed
+	# (non-rebindable) on pad — it's also the boot/death screen's UI-accept.
+	return _action_held("sprint_boost") or (touch_hud != null and touch_hud.sprint_held) \
+		or Gamepad.pressed(JOY_BUTTON_A)
 
 
 func _fire_held() -> bool:
-	return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) \
-		or (touch_hud != null and touch_hud.fire_held)
+	return _action_held("fire") \
+		or (touch_hud != null and touch_hud.fire_held) \
+		or Gamepad.trigger_right() > 0.5      # R2, fixed (analog)
 
 
-# Tap-buttons on the touch HUD route through the existing keyboard handler so
-# every interaction has exactly one code path.
-func _on_touch_action(name: StringName) -> void:
-	match name:
-		&"interact": _handle_key(KEY_E)
-		&"suit":     _handle_key(KEY_F)
-		&"summon":   _handle_key(KEY_V)
+# Hold to aim down sights on foot (also zooms the suit). L2 mirrors the
+# rebindable keyboard key so the trigger feels like the aim button.
+func _aim_held() -> bool:
+	return _action_held("aim") or Gamepad.trigger_left() > 0.4
+
+
+# Vehicle handbrake — Space, or Square (X) held while driving. The pad side is
+# yoked to "interact"'s binding in InputConfig (same physical button, mutually
+# exclusive by context), so this action alone already covers both devices.
+func _handbrake_held() -> bool:
+	return _action_held("handbrake")
+
+
+# Ground/water-vehicle throttle — R2 accelerates, L2 brakes/reverses (the
+# natural driving feel), with the left stick as an alternative. On foot the same
+# triggers are aim/fire, but that never overlaps: weapons and aim are disabled
+# while driving.
+func _drive_accel() -> float:
+	return clampf(_move_z() + Gamepad.trigger_right() - Gamepad.trigger_left(),
+		-1.0, 1.0)
+
+
+# Vertical axis for aircraft / suit — rebindable keyboard Up/Down, or the
+# RIGHT stick Y (free in vehicles, where the chase cam is automatic). Triggers
+# stay clear for aim/fire. Push the right stick up to climb.
+func _updown() -> float:
+	var v := (1.0 if _action_held("fly_up") else 0.0) - (1.0 if _action_held("fly_down") else 0.0)
+	v -= Gamepad.look().y
+	return clampf(v, -1.0, 1.0)
+
+
+# Suit secondary fire (missiles) — right mouse (rebindable), or L1 (fixed —
+# shares the physical button with weapon_prev, mutually exclusive by context:
+# L1 only fires missiles while suited, and weapon switching is disabled then).
+func _altfire_held() -> bool:
+	return _action_held("alt_fire") or Gamepad.pressed(JOY_BUTTON_LEFT_SHOULDER)
 
 
 # ---------------- Kiosk terminals ----------------
@@ -623,7 +775,7 @@ func _on_suit_purchased() -> void:
 		suit_node.position = Vector3(CityWorld.STARK_SUIT_PAD.x, 0.0,
 			CityWorld.STARK_SUIT_PAD.z)
 		suit_armed = true
-		_show_objective("%s delivered to the SUIT BAY pad outside — press V to call it to you, or step onto it, to suit up." % nm, 7.0)
+		_show_objective("%s delivered to the SUIT BAY pad outside — call it to you, or step onto it, to suit up." % nm, 7.0)
 	else:
 		_show_objective("Suit upgraded to %s — its new look applies next time you suit up." % nm, 4.0)
 
@@ -646,13 +798,26 @@ func _spawn_owned_vehicle(catalog_idx: int) -> void:
 	v["owned_spawn"] = true
 	vehicles.append(v)
 	_owned_spawn = v
-	_show_objective("Your %s is on the lot — walk over and press F to drive." % car.name, 5.0)
+	_show_objective("Your %s is on the lot — walk over to drive it." % car.name, 5.0)
 
 
 func _on_terminal_closed() -> void:
 	terminal_open = false
 	GameState.paused = false
 	_mouse_rel = Vector2.ZERO          # drop look-input built up while trading
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+# ---------------- Pause menu ----------------
+func _open_pause_menu() -> void:
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	pause_menu.open()
+
+
+func _on_pause_resumed() -> void:
+	GameState.paused = false
+	_mouse_rel = Vector2.ZERO
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -716,9 +881,12 @@ func _phone_teleport(x: float, z: float) -> void:
 	if space_state != "":
 		space_state = ""
 		_set_space_sky(false)
+		AudioFX.rocket_engine_stop()
+		AudioFX.wind_stop()
 	player_pos = Vector3(x, 0, z)
 	player_node.position = player_pos
-	player_node.visible = true
+	# Keep the body hidden while suited — the suit shell is the visible actor.
+	player_node.visible = suit_state == "none"
 	_show_objective("Fast-travelled.", 3.0)
 
 
@@ -727,6 +895,11 @@ func _phone_teleport(x: float, z: float) -> void:
 # =====================================================================
 func _process(delta: float) -> void:
 	if not GameState.started or GameState.paused:
+		# Nothing below runs while paused, so any looping rocket audio would
+		# otherwise be stuck playing forever — this is the one place that
+		# always runs regardless of what the game was doing when it paused.
+		AudioFX.rocket_engine_stop()
+		AudioFX.wind_stop()
 		return
 	var dt: float = min(0.05, delta)
 	_now += dt
@@ -745,6 +918,15 @@ func _process(delta: float) -> void:
 		var sens := 0.0011 if aiming else 0.0025
 		cam_yaw -= rel.x * sens
 		cam_pitch -= rel.y * sens
+		# Right stick — angular velocity (framerate-independent), slower on aim.
+		# While flying the Iron Man suit, right-stick Y is reserved for climb/dive
+		# (see _updown), so it must NOT also pitch the camera — only yaw applies.
+		var glook := Gamepad.look()
+		if glook != Vector2.ZERO:
+			var gspeed := 1.6 if aiming else 2.9
+			cam_yaw -= glook.x * gspeed * dt
+			if suit_state != "on":
+				cam_pitch -= glook.y * gspeed * dt
 		cam_pitch = clamp(cam_pitch, -0.2, 1.2)
 
 	if parachuting:
@@ -783,12 +965,13 @@ func _process(delta: float) -> void:
 	# Hold Space to aim down the crosshair in zoomed first-person (on foot or
 	# suited — only the mid-assembly suit-up locks it out).
 	aiming = in_car == null and not parachuting and suit_state != "suiting" \
-		and suit_state != "summoning" and _key(KEY_SPACE)
+		and suit_state != "summoning" and _aim_held()
 
 	# Idle bob/spin for the parked Iron Man suit waiting to be worn.
 	if suit_node != null and suit_state == "none":
 		suit_node.rotation.y += dt * 0.7
-		suit_node.position.y = _ground_y() + 0.06 + sin(_now * 2.0) * 0.12
+		suit_node.position.y = _ground_y(suit_node.position.x, suit_node.position.z) \
+			+ 0.06 + sin(_now * 2.0) * 0.12
 
 	_update_shooting()
 	_update_tank_fire()
@@ -801,6 +984,7 @@ func _process(delta: float) -> void:
 	_update_my_detail(dt)
 	_update_wanted(dt)
 	_update_bullets(dt)
+	_update_idle_vehicle_fires(dt)
 	_update_particles(dt)
 	_update_pickups(dt)
 
@@ -833,7 +1017,7 @@ func _process(delta: float) -> void:
 	_update_race(dt)
 	AudioFX.set_radio(in_car != null and not in_car.is_plane
 		and not in_car.get("is_boat", false))
-	_update_camera()
+	_update_camera(dt)
 	_push_hud()
 
 
@@ -848,7 +1032,7 @@ func _update_race(dt: float) -> void:
 		var pp: Vector3 = world.track.paddock_pos
 		np = Vector2(pp.x - in_car.pos.x, pp.z - in_car.pos.z).length() < 9.0
 	if np and not _near_paddock:
-		_show_objective("Grand Prix paddock — press G to enter a race.", 4.0)
+		_show_objective("Grand Prix paddock — enter a race here.", 4.0)
 	_near_paddock = np
 
 	# Countdown announcements.
@@ -888,7 +1072,7 @@ func _update_moon_walk(dt: float) -> void:
 		player_pos.z += dz
 		player_yaw = atan2(dx, dz)
 	var bob: float = absf(sin(walk_phase * 0.45)) * (0.55 if l > 0.0 else 0.0)
-	player_pos.y = CityWorld.MOON_Y + bob
+	player_pos.y = world.moon_height(player_pos.x, player_pos.z) + bob
 	player_node.position = player_pos
 	player_node.rotation.y = player_yaw
 	Human.animate(player_node, walk_phase * 0.6, l > 0.0, 0.7, 0.49)
@@ -937,7 +1121,8 @@ func _update_on_foot(dt: float) -> void:
 			player_yaw = lerp_angle(player_yaw, atan2(_walk_vel.x, _walk_vel.y),
 				minf(1.0, dt * 14.0))
 	# Walk up onto raised surfaces — the river bridges and the dock jetties.
-	player_pos.y = world.surface_height(player_pos.x, player_pos.z)
+	# Pass the current altitude so the office floor only applies upstairs.
+	player_pos.y = world.surface_height(player_pos.x, player_pos.z, player_pos.y)
 	player_node.position = player_pos
 	player_node.rotation.y = player_yaw
 	# Clear any residual lean carried over from a bike or suit flight.
@@ -954,36 +1139,36 @@ func _update_on_foot(dt: float) -> void:
 		if suit_armed and sd < 2.2:
 			_begin_suit()
 
-	# Walk up to the exchange kiosk to unlock the trading terminal (press E).
+	# Walk up to the exchange kiosk to unlock the trading terminal.
 	var ed := Vector2(CityWorld.EXCHANGE.x - player_pos.x,
 		CityWorld.EXCHANGE.z - player_pos.z).length()
 	var near_exchange := ed < 3.6
 	if near_exchange and not _near_exchange:
-		_show_objective("Free Harbor Exchange - press E to enter the trading floor.", 4.0)
+		_show_objective("Free Harbor Exchange — walk in to trade.", 4.0)
 	_near_exchange = near_exchange
 
-	# Walk up to the dealership kiosk to buy and spawn cars (press E).
+	# Walk up to the dealership kiosk to buy and spawn cars.
 	var dd := Vector2(CityWorld.DEALERSHIP.x - player_pos.x,
 		CityWorld.DEALERSHIP.z - player_pos.z).length()
 	var near_dealership := dd < 3.6
 	if near_dealership and not _near_dealership:
-		_show_objective("Free Harbor Autos - press E to buy a car.", 4.0)
+		_show_objective("Free Harbor Autos — browse the lot to buy a car.", 4.0)
 	_near_dealership = near_dealership
 
-	# Walk up to the Stark lab kiosk to buy Iron Man suit upgrades (press E).
+	# Walk up to the Stark lab kiosk to buy Iron Man suit upgrades.
 	var kd := Vector2(CityWorld.STARK_LAB.x - player_pos.x,
 		CityWorld.STARK_LAB.z - player_pos.z).length()
 	var near_stark := kd < 3.6
 	if near_stark and not _near_stark:
-		_show_objective("Stark Industries - press E to upgrade your suit.", 4.0)
+		_show_objective("Stark Industries — upgrade your suit here.", 4.0)
 	_near_stark = near_stark
 
-	# Walk up to the realtor kiosk to buy safehouse property (press E).
+	# Walk up to the realtor kiosk to buy safehouse property.
 	var rd := Vector2(CityWorld.REALTOR.x - player_pos.x,
 		CityWorld.REALTOR.z - player_pos.z).length()
 	var near_realtor := rd < 3.6
 	if near_realtor and not _near_realtor:
-		_show_objective("Free Harbor Realty - press E to buy a safehouse.", 4.0)
+		_show_objective("Free Harbor Realty — buy a safehouse here.", 4.0)
 	_near_realtor = near_realtor
 
 	# Inside the trading-floor office: detect the monitor desk and the exit pad.
@@ -1005,10 +1190,10 @@ func _update_car(v: Dictionary, dt: float) -> void:
 		v.node.position = v.pos
 		v.node.rotation.y = v.yaw
 		return
-	var accel := _move_z()
+	var accel := _drive_accel()
 	var turn := -_move_x()
 	var boost := 1.7 if _sprint_held() else 1.0
-	var handbrake := _key(KEY_SPACE)
+	var handbrake := _handbrake_held()
 	car_drifting = handbrake and absf(v.speed) > 12.0 and turn != 0.0
 
 	# Accel scales with the car's top speed so it can actually fight drag up to
@@ -1020,6 +1205,12 @@ func _update_car(v: Dictionary, dt: float) -> void:
 	if abs(v.speed) > 1.0 and randf() < 0.15:
 		AudioFX.engine_rev(absf(v.speed) / maxf(v.max_speed, 1.0))
 	var speed_frac: float = clampf(absf(v.speed) / maxf(v.max_speed, 1.0), 0.0, 1.0)
+	# Engine haptics — kept very faint so the road feel doesn't drown out the
+	# events that matter (crashes, kills). Only a slight low rumble at high speed,
+	# with a light textured layer while actually sliding sideways.
+	var eng_strong: float = speed_frac * 0.08
+	var eng_weak: float = 0.18 if car_drifting else 0.0
+	Gamepad.set_engine(eng_weak, eng_strong)
 	var eff_turn := 0.0
 	if abs(v.speed) > 0.5:
 		var sgn := 1.0 if v.speed > 0.0 else -1.0
@@ -1050,6 +1241,7 @@ func _update_car(v: Dictionary, dt: float) -> void:
 		v.pos.x += dx
 	else:
 		_spawn_sparks(v.pos.x, 0.8, v.pos.z, 4)
+		Gamepad.pulse(0.5, clampf(absf(v.speed) * 0.03, 0.25, 1.0), 0.2)
 		v.hp -= abs(v.speed) * 0.3
 		v.speed *= -0.3
 		AudioFX.hit()
@@ -1057,6 +1249,7 @@ func _update_car(v: Dictionary, dt: float) -> void:
 		v.pos.z += dz
 	else:
 		_spawn_sparks(v.pos.x, 0.8, v.pos.z, 4)
+		Gamepad.pulse(0.5, clampf(absf(v.speed) * 0.03, 0.25, 1.0), 0.2)
 		v.hp -= abs(v.speed) * 0.3
 		v.speed *= -0.3
 		AudioFX.hit()
@@ -1080,9 +1273,13 @@ func _update_car(v: Dictionary, dt: float) -> void:
 				if o.hp <= 0.0:
 					continue
 				if o.pos.distance_squared_to(v.pos) < 2.25:
-					o.hp -= abs(v.speed) * 4.0
+					# dt-scaled (60 fps equivalent of the old per-frame values)
+					# so run-over damage and heat don't depend on frame rate.
+					o.hp -= abs(v.speed) * 240.0 * dt
 					_spawn_blood(o.pos.x, 1.0, o.pos.z, 12)
-					_raise_wanted(1.0)
+					_raise_wanted(60.0 * dt)
+					if o.hp <= 0.0:                      # crossed to dead this hit
+						Gamepad.pulse(0.35, 0.7, 0.2)   # bone-crunch on the kill
 	player_pos = v.pos
 
 	if v.hp <= 0.0 and not v.burning:
@@ -1108,6 +1305,26 @@ func _update_car(v: Dictionary, dt: float) -> void:
 				player_node.visible = true
 
 
+## Fire/explosion ticking for every vehicle NOT being driven — the per-type
+## _update_* functions only run for `in_car`, so without this a shot-up parked
+## car sat inert at negative hp and a burning car abandoned mid-burn froze
+## burning forever (and could never be re-entered).
+func _update_idle_vehicle_fires(dt: float) -> void:
+	for v in vehicles.duplicate():
+		if v == in_car:
+			continue                     # the driven vehicle ticks its own burn
+		if v.hp <= 0.0 and not v.burning:
+			v.burning = true
+			v.burn_timer = 2.0
+		if v.burning:
+			v.burn_timer -= dt
+			_spawn_fire(v.pos.x, v.pos.y, v.pos.z, 2)
+			if v.burn_timer <= 0.0:
+				_explode(v.pos.x, 1.0, v.pos.z)
+				v.node.queue_free()
+				vehicles.erase(v)
+
+
 ## Pose the player astride a bike — seated on the saddle, hands on the bars.
 func _seat_bike_rider(v: Dictionary) -> void:
 	player_node.visible = true
@@ -1117,7 +1334,12 @@ func _seat_bike_rider(v: Dictionary) -> void:
 	player_node.rotation.y = v.yaw
 	# Lean with the bike so the rider doesn't stay bolt upright through corners.
 	player_node.rotation.z = v.node.rotation.z
-	if player_node.has_meta("limbs"):
+	if player_node.has_meta("skel"):
+		# Rigged human: pose the real bones. Never poke the limb markers here —
+		# armR is the bone-attached weapon mount whose basis cancels the hand
+		# bone's orientation, and writing rotation.x corrupts it permanently.
+		Human.sit(player_node)
+	elif player_node.has_meta("limbs"):
 		var lim: Dictionary = player_node.get_meta("limbs")
 		# Legs tucked forward to the pegs, arms reaching the handlebars.
 		lim.legL.rotation.x = 0.95
@@ -1133,13 +1355,14 @@ func _update_plane(v: Dictionary, dt: float) -> void:
 	# speed — just hold Up to climb. W boosts, S throttles back.
 	var thrust := _move_z()
 	var turn := -_move_x()
-	var pitch_input := (1.0 if _key(KEY_UP) else 0.0) - (1.0 if _key(KEY_DOWN) else 0.0)
+	var pitch_input := _updown()
 
 	# Throttle auto-spools toward cruise (0.72); W boosts to full, S throttles
 	# back. The plane is never stuck idling — it always accelerates to fly.
 	var target_throttle: float = clampf(0.72 + thrust * 0.28, 0.0, 1.0)
 	v.throttle = move_toward(v.throttle, target_throttle, 0.9 * dt)
 	v.speed = move_toward(v.speed, v.throttle * v.max_speed, v.max_speed * 0.6 * dt)
+	Gamepad.set_engine(0.10 + v.throttle * 0.14, 0.04)   # steady jet-engine hum
 
 	# Pitch — Up raises the nose, Down drops it; snaps back level when released.
 	v.pitch += pitch_input * 0.8 * dt
@@ -1217,9 +1440,10 @@ func _update_helicopter(v: Dictionary, dt: float) -> void:
 	# and the helicopter just hovers in place — vertical takeoff, no runway.
 	var fwd := _move_z()
 	var turn := -_move_x()
-	var lift := (1.0 if _key(KEY_UP) else 0.0) - (1.0 if _key(KEY_DOWN) else 0.0)
+	var lift := _updown()
 
 	v.yaw += turn * 1.4 * dt
+	Gamepad.set_engine(0.16, 0.10)   # constant rotor thrum
 
 	# Vertical: Up climbs, Down descends, neutral holds a steady hover.
 	v.vy = move_toward(v.vy, lift * 24.0, 48.0 * dt)
@@ -1295,7 +1519,8 @@ func _try_enter_exit() -> void:
 		if v.get("moon", false):
 			in_car = null
 			cam_dist = 6.5
-			player_pos = Vector3(v.pos.x + 3.6, CityWorld.MOON_Y, v.pos.z)
+			var mx: float = v.pos.x + 3.6
+			player_pos = Vector3(mx, world.moon_height(mx, v.pos.z), v.pos.z)
 			player_node.visible = true
 			_show_objective("Stepped off the moon buggy.")
 			return
@@ -1325,7 +1550,6 @@ func _try_enter_exit() -> void:
 		var exit_z: float = v.pos.z + sin(v.yaw + PI / 2.0) * 2.0
 		player_pos = Vector3(exit_x, world.surface_height(exit_x, exit_z), exit_z)
 		player_node.visible = true
-		_show_objective("On foot. Mouse to aim, click to shoot. Hold Space to zoom into a first-person aim.")
 		return
 	var best = null
 	var best_d := INF
@@ -1350,22 +1574,21 @@ func _try_enter_exit() -> void:
 			cam_dist = best.get("cam_dist", 28.0)
 			if space_state == "moon":
 				space_state = "moon_ascent"
-				_show_objective("Lift off — hold W to fly home to Earth.", 6.0)
+				_show_objective("Lift off — fly home to Earth.", 6.0)
 			else:
 				space_state = "ascent"
-				_show_objective("ROCKET — hold W to launch, A/D steer. Climb to space, then the Moon.", 9.0)
+				_show_objective("ROCKET — climb to space, then the Moon.", 9.0)
 		elif best.get("is_heli", false):
 			cam_dist = best.get("cam_dist", 15.0)
-			_show_objective("Helicopter: hold Up to lift straight off and climb, Down to descend. W/S fly forward/back, A/D turn. Release everything to hover. F bails out (parachute).", 8.0)
+			_show_objective("Helicopter airborne — release everything to hover.", 8.0)
 		elif best.get("is_boat", false):
 			cam_dist = 7.5
-			_show_objective("Boat: W/S throttle, A/D steer. Cruise the river and the bay — F to step off at a dock.", 7.0)
+			_show_objective("Boat underway — cruise the river and the bay.", 7.0)
 		elif best.is_plane:
 			cam_dist = best.get("cam_dist", 12.0)
-			_show_objective("Plane: the engine spools up on its own - just hold Up to climb once rolling. A/D turn, W/S throttle, Down to descend. F bails out (parachute).", 8.0)
+			_show_objective("Plane airborne — the engine spools up on its own once rolling.", 8.0)
 		else:
 			cam_dist = 6.5
-			_show_objective("WASD to drive. SHIFT boost. SPACE handbrake. F to exit.")
 
 
 # ---------------- Parachute ----------------
@@ -1380,7 +1603,7 @@ func _deploy_parachute(at: Vector3) -> void:
 		para_node.queue_free()
 	para_node = _make_parachute()
 	add_child(para_node)
-	_show_objective("Parachute open! WASD to steer your drift — you'll land safely.", 5.0)
+	_show_objective("Parachute open! Steer your drift — you'll land safely.", 5.0)
 
 
 func _update_parachute(dt: float) -> void:
@@ -1433,7 +1656,27 @@ func _make_parachute() -> Node3D:
 ## Builds the armoured humanoid — same limb layout as Human (so the walk
 ## animation works), plus glowing arc reactor, hand repulsors and helmet eyes.
 ## meta "pieces" holds every plate in feet-to-head order for the suit-up reveal.
+const IRONMAN_MODEL: PackedScene = preload("res://assets/characters/ironman.glb")
+const SUIT_FACE_OFFSET := 0.0       # model already faces +Z (the game's forward)
+const SUIT_SCALE := 58.0            # the Sketchfab model is tiny; this ≈ 1.95 m tall
+
+## The worn suit — the rigged Iron Man Mark 85 model, with its feet on the
+## ground. The fly-together assembly and idle code treat it as a single piece
+## (empty "pieces"/"rest" metas), so it simply appears whole.
 func _build_iron_suit(tier := 1) -> Node3D:
+	var ig := Node3D.new()
+	var model: Node3D = IRONMAN_MODEL.instantiate()
+	ig.add_child(model)
+	var sc := SUIT_SCALE * (1.5 if tier >= 4 else 1.0)   # Hulkbuster wears large
+	model.scale = Vector3(sc, sc, sc)
+	model.rotation.y = SUIT_FACE_OFFSET
+	ig.set_meta("pieces", [])
+	ig.set_meta("rest", [])
+	return ig
+
+
+## Legacy procedural box suit — retained as a fallback, no longer used.
+func _build_iron_suit_boxes(tier := 1) -> Node3D:
 	var g := Node3D.new()
 	# Each tier wears its own livery: classic red/gold Mark III, crimson and
 	# silver Mark VI, gunmetal War Machine (which also gets a shoulder cannon).
@@ -1606,9 +1849,9 @@ func _refresh_suit_model() -> void:
 	suit_node.rotation = rot
 
 
-## The Y of the surface the player stands on — the Moon when up there, else 0.
-func _ground_y() -> float:
-	return CityWorld.MOON_Y if space_state == "moon" else 0.0
+## The Y of the surface at (x, z) — the Moon's heightfield when up there, else 0.
+func _ground_y(x: float, z: float) -> float:
+	return world.moon_height(x, z) if space_state == "moon" else 0.0
 
 
 func _begin_suit() -> void:
@@ -1616,7 +1859,7 @@ func _begin_suit() -> void:
 	suit_state = "suiting"
 	suit_timer = 0.0
 	suit_armed = false
-	var gy := _ground_y()
+	var gy := _ground_y(player_pos.x, player_pos.z)
 	player_pos.y = gy
 	suit_node.position = Vector3(player_pos.x, gy, player_pos.z)
 	suit_node.rotation = Vector3(0, player_yaw, 0)
@@ -1636,27 +1879,34 @@ func _unsuit() -> void:
 	suit_state = "none"
 	suit_armed = false
 	suit_vy = 0.0
-	var gy := _ground_y()
+	var gy := _ground_y(player_pos.x, player_pos.z)
 	player_pos.y = gy
-	suit_node.position = Vector3(player_pos.x, gy, player_pos.z)
-	suit_node.rotation = Vector3.ZERO
-	var pieces: Array = suit_node.get_meta("pieces")
-	var rest: Array = suit_node.get_meta("rest")
-	for i in pieces.size():
-		pieces[i].scale = Vector3.ONE
-		pieces[i].visible = true
-		pieces[i].position = rest[i]
+	# If we powered down standing inside something solid (e.g. wedged against an
+	# imported-city building), step out to the nearest clear ground.
+	if world.collides_at(player_pos.x, player_pos.z, 0.5, gy):
+		var safe := world.find_safe_spawn()
+		player_pos = Vector3(safe.x, gy, safe.y)
+	if suit_node != null:
+		suit_node.position = Vector3(player_pos.x, player_pos.y, player_pos.z)
+		suit_node.rotation = Vector3.ZERO
+		if suit_node.has_meta("pieces"):
+			var pieces: Array = suit_node.get_meta("pieces")
+			var rest: Array = suit_node.get_meta("rest")
+			for i in pieces.size():
+				pieces[i].scale = Vector3.ONE
+				pieces[i].visible = true
+				pieces[i].position = rest[i]
 	player_node.position = player_pos
 	player_node.visible = true
 	cam_dist = 6.5
-	_show_objective("Suit powered down — press V to call it back, or step onto it, to suit up again.", 4.0)
+	_show_objective("Suit powered down — call it back, or step onto it, to suit up again.", 4.0)
 
 
 func _update_suiting(dt: float) -> void:
 	suit_timer += dt
 	var pieces: Array = suit_node.get_meta("pieces")
 	var rest: Array = suit_node.get_meta("rest")
-	suit_node.position = Vector3(player_pos.x, _ground_y(), player_pos.z)
+	suit_node.position = Vector3(player_pos.x, _ground_y(player_pos.x, player_pos.z), player_pos.z)
 	suit_node.rotation = Vector3(0, player_yaw, 0)
 	# The body stands still, visible, while the plates clamp onto it.
 	player_node.position = player_pos
@@ -1677,7 +1927,7 @@ func _update_suiting(dt: float) -> void:
 			pieces[i].position = rest[i]
 		suit_state = "on"
 		player_node.visible = false
-		_show_objective("SUIT ONLINE. UP/DOWN to fly up/down (hovers when you let go), WASD to move, SHIFT boost, SPACE to zoom aim, L-click repulsors, R-click missiles. F powers down.", 10.0)
+		_show_objective("SUIT ONLINE — full flight and weapons systems engaged. Hovers when you let go.", 10.0)
 
 
 ## Call the suit from afar — every plate detaches from the parked armour and
@@ -1691,7 +1941,7 @@ func _summon_suit() -> void:
 	suit_state = "summoning"
 	suit_timer = 0.0
 	suit_armed = false
-	var gy := _ground_y()
+	var gy := _ground_y(player_pos.x, player_pos.z)
 	player_pos.y = gy
 	suit_node.position = Vector3(player_pos.x, gy, player_pos.z)
 	suit_node.rotation = Vector3(0, player_yaw, 0)
@@ -1723,7 +1973,7 @@ func _update_summoning(dt: float) -> void:
 	var pieces: Array = suit_node.get_meta("pieces")
 	var rest: Array = suit_node.get_meta("rest")
 	var starts: Array = suit_node.get_meta("summon_starts")
-	suit_node.position = Vector3(player_pos.x, _ground_y(), player_pos.z)
+	suit_node.position = Vector3(player_pos.x, _ground_y(player_pos.x, player_pos.z), player_pos.z)
 	suit_node.rotation = Vector3(0, player_yaw, 0)
 	# The body stands ready, visible, while the armour streaks in around it.
 	player_node.position = player_pos
@@ -1748,18 +1998,18 @@ func _update_summoning(dt: float) -> void:
 			pieces[i].position = rest[i]
 		suit_state = "on"
 		player_node.visible = false
-		_show_objective("SUIT ONLINE. UP/DOWN to fly up/down (hovers when you let go), WASD to move, SHIFT boost, SPACE to zoom aim, L-click repulsors, R-click missiles. F powers down.", 10.0)
+		_show_objective("SUIT ONLINE — full flight and weapons systems engaged. Hovers when you let go.", 10.0)
 
 
 func _update_suit(dt: float) -> void:
 	var st := Garage.suit_stats()
-	var ascend := (1.0 if _key(KEY_UP) else 0.0) - (1.0 if _key(KEY_DOWN) else 0.0)
+	var ascend := _updown()
 	var mx := _move_x()
 	var mz := _move_z()
 
 	# Vertical: Up climbs, Down descends, neither holds a steady hover. The
-	# floor follows the surface — y=0 on Earth, MOON_Y up on the Moon.
-	var gy := _ground_y()
+	# floor follows the surface — y=0 on Earth, the Moon's heightfield up there.
+	var gy := _ground_y(player_pos.x, player_pos.z)
 	suit_vy = move_toward(suit_vy, ascend * st.fly_v, 46.0 * dt)
 	player_pos.y = clampf(player_pos.y + suit_vy * dt, gy, gy + 220.0)
 	if player_pos.y <= gy:
@@ -1808,7 +2058,7 @@ func _update_suit(dt: float) -> void:
 			and _now - repulsor_at > st.repulsor_cd:
 			repulsor_at = _now
 			_fire_repulsor(st)
-		if st.has_missiles and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) \
+		if st.has_missiles and _altfire_held() \
 			and _now - missile_at > st.missile_cd:
 			missile_at = _now
 			_fire_missile(st)
@@ -1821,6 +2071,7 @@ func _fire_repulsor(st: Dictionary) -> void:
 		"explosive": false, "pellets": 1.0}
 	_spawn_bullet(from, dir, w, "player", _repulsor_mat, 170.0, 0.2)
 	_spawn_sparks(from.x + dir.x, from.y + dir.y, from.z + dir.z, 2)
+	Gamepad.pulse(0.45, 0.5, 0.12)
 	AudioFX.shoot()
 
 
@@ -1830,11 +2081,16 @@ func _fire_missile(st: Dictionary) -> void:
 	var w := {"range": MISSILE_RANGE, "damage": st.missile_dmg,
 		"explosive": true, "pellets": 1.0}
 	_spawn_bullet(from, dir, w, "player", _missile_mat, 82.0, 0.36)
+	Gamepad.pulse(0.55, 0.85, 0.22)
 	AudioFX.shoot()
 
 
 func _player_invuln() -> bool:
 	return suit_state != "none"
+
+
+func _is_sniper() -> bool:
+	return in_car == null and WeaponDB.LIST[GameState.weapon_idx].name == "SNIPER"
 
 
 # =====================================================================
@@ -1991,7 +2247,7 @@ func _update_shooting() -> void:
 	if ammo != INF and ammo <= 0:
 		if _now - last_fire_at > 0.75:
 			last_fire_at = _now
-			_show_objective("Out of ammo - Q or 1-9 to switch weapon")
+			_show_objective("Out of ammo — switch weapons")
 	elif _now - last_fire_at > w.rate:
 		last_fire_at = _now
 		_fire_weapon(w)
@@ -2020,7 +2276,8 @@ func _update_tank_fire() -> void:
 func _fire_weapon(w: Dictionary) -> void:
 	var dir := -camera.global_transform.basis.z
 	dir = dir.normalized()
-	var from := Vector3(player_pos.x, 1.5, player_pos.z)
+	# Muzzle rides the player's actual altitude (bridge deck, office, Moon).
+	var from := player_pos + Vector3(0.0, 1.5, 0.0)
 
 	if w.melee:
 		var my := atan2(dir.x, dir.z)
@@ -2041,6 +2298,7 @@ func _fire_weapon(w: Dictionary) -> void:
 				if abs(_ang_diff(atan2(rel.x, rel.z), my)) < 0.6:
 					o.hp -= w.damage
 					_spawn_blood(o.pos.x, 1.2, o.pos.z, 4)
+		Gamepad.pulse(0.0, 0.4, 0.12)        # melee swing — a dull thud
 		AudioFX.hit()
 		return
 
@@ -2049,8 +2307,14 @@ func _fire_weapon(w: Dictionary) -> void:
 	for i in int(w.pellets):
 		var d: Vector3 = dir + Vector3(randf() - 0.5, randf() - 0.5, randf() - 0.5) * float(w.spread)
 		_spawn_bullet(from, d.normalized(), w, "player")
+	# Recoil kick — a distinct punch per shot (long enough for the motors to
+	# spin up), sharper for heavier hits and bigger for shotgun spreads.
+	Gamepad.pulse(0.55, clampf(0.5 + float(w.damage) * 0.012 + float(w.pellets) * 0.04, 0.45, 1.0), 0.16)
 	if w.sound:
-		AudioFX.shoot()
+		if w.name == "SNIPER":
+			AudioFX.shoot_sniper()
+		else:
+			AudioFX.shoot()
 
 
 func _spawn_bullet(from: Vector3, dir: Vector3, w: Dictionary, source: String,
@@ -2102,7 +2366,14 @@ func _update_bullets(dt: float) -> void:
 						b.life = 0.0
 						break
 		else:
-			if player_hp > 0.0 and b.pos.distance_to(_torso(player_pos)) < 1.3:
+			# The vehicle takes the round while the player is driving — checked
+			# FIRST, or the driver's torso (which tracks the vehicle) soaks
+			# full bullet damage through a tank hull.
+			if in_car != null and b.pos.distance_to(in_car.pos) < 2.0:
+				in_car.hp -= b.damage * 0.5
+				_spawn_sparks(b.pos.x, b.pos.y, b.pos.z, 4)
+				b.life = 0.0
+			elif player_hp > 0.0 and b.pos.distance_to(_torso(player_pos)) < 1.3:
 				if _player_invuln():
 					# Rounds spark harmlessly off the Iron Man armour.
 					_spawn_sparks(b.pos.x, b.pos.y, b.pos.z, 5)
@@ -2114,11 +2385,8 @@ func _update_bullets(dt: float) -> void:
 						dmg -= ab
 					player_hp -= dmg
 					_spawn_blood(player_pos.x, 1.2, player_pos.z, 4)
+					Gamepad.pulse(0.55, 0.55, 0.18)    # taking a round hurts
 				AudioFX.hit()
-				b.life = 0.0
-			elif in_car != null and b.pos.distance_to(in_car.pos) < 2.0:
-				in_car.hp -= b.damage * 0.5
-				_spawn_sparks(b.pos.x, b.pos.y, b.pos.z, 4)
 				b.life = 0.0
 	var keep: Array = []
 	for b in bullets:
@@ -2131,7 +2399,10 @@ func _update_bullets(dt: float) -> void:
 
 
 func _torso(pos: Vector3) -> Vector3:
-	return Vector3(pos.x, 1.2, pos.z)
+	# Chest height above the actor's own ground — NOT a fixed world height, or
+	# a parachuting / bridge-deck / office player would be "hit" by rounds
+	# passing through their ground projection far below.
+	return Vector3(pos.x, pos.y + 1.2, pos.z)
 
 
 func _apply_explosion(center: Vector3, damage: float, source: String) -> void:
@@ -2150,10 +2421,11 @@ func _apply_explosion(center: Vector3, damage: float, source: String) -> void:
 	else:
 		var d := Vector2(player_pos.x - center.x, player_pos.z - center.z).length()
 		if d < radius:
+			var falloff := 1.0 - d / radius
+			Gamepad.pulse(0.6, 0.6 + falloff * 0.4, 0.3)
 			if _player_invuln():
 				_spawn_sparks(player_pos.x, 1.2, player_pos.z, 6)
 			else:
-				var falloff := 1.0 - d / radius
 				player_hp -= damage * (0.35 + falloff * 0.65)
 				_spawn_blood(player_pos.x, 1.2, player_pos.z, 5)
 	for v in vehicles:
@@ -2169,6 +2441,10 @@ func _explode(x: float, y: float, z: float) -> void:
 		_spawn_particle(x, y + 0.5, z, col, 0.8,
 			(randf() - 0.5) * 10.0, randf() * 6.0, (randf() - 0.5) * 10.0)
 	var dp := Vector2(player_pos.x - x, player_pos.z - z).length()
+	if dp < 14.0:
+		# A nearby blast you feel through the pad — deeper the closer it lands.
+		var prox: float = 1.0 - dp / 14.0
+		Gamepad.pulse(0.4 + prox * 0.4, 0.5 + prox * 0.5, 0.25 + prox * 0.2)
 	if dp < 8.0 and not _player_invuln():
 		player_hp -= 60.0 * (1.0 - dp / 8.0)
 	for t in npcs + cops + guards + vips:
@@ -2304,7 +2580,7 @@ func _update_cops(dt: float) -> void:
 		if d < 60.0 and _now - c.last_shot > fire_gap:
 			c.last_shot = _now
 			var from := Vector3(c.pos.x, 1.4, c.pos.z)
-			var dir := (Vector3(target.x, 1.2, target.z) - from).normalized()
+			var dir := (Vector3(target.x, target.y + 1.2, target.z) - from).normalized()
 			dir.x += (randf() - 0.5) * 0.05
 			dir.z += (randf() - 0.5) * 0.05
 			_spawn_bullet(from, dir.normalized(), WeaponDB.LIST[2], "cop")
@@ -2671,7 +2947,7 @@ func _update_guards(dt: float) -> void:
 			if d < 55.0 and _now - g.last_shot > 0.85:
 				g.last_shot = _now
 				var from := Vector3(g.pos.x, 1.4, g.pos.z)
-				var dir := (Vector3(target.x, 1.2, target.z) - from).normalized()
+				var dir := (Vector3(target.x, target.y + 1.2, target.z) - from).normalized()
 				dir.x += (randf() - 0.5) * 0.06
 				dir.z += (randf() - 0.5) * 0.06
 				_spawn_bullet(from, dir.normalized(), WeaponDB.LIST[2], "cop")
@@ -2765,6 +3041,7 @@ func _update_pickups(dt: float) -> void:
 		k.node.position.y = 0.6 + sin(_now * 5.0) * 0.1
 		if Vector2(k.pos.x - player_pos.x, k.pos.z - player_pos.z).length() < 1.5:
 			GameState.money += k.amount
+			Gamepad.pulse(0.22, 0.0, 0.06)     # light high-freq "coin" tick
 			AudioFX.coin()
 			k.taken = true
 		if k.taken:
@@ -2805,10 +3082,23 @@ func _update_racers(dt: float) -> void:
 	if t == null or racers.is_empty():
 		return
 	var n: int = t.baked.size()
-	# The player's monotonic race progress — distance covered since the grid,
-	# measured in centreline steps. Robust across the start/finish line.
-	if RaceManager.state == "racing" and in_car != null:
-		_player_prog += maxf(0.0, in_car.speed) * dt / Track.SAMPLE
+	# The player's monotonic race progress in centreline steps — the same unit
+	# as the AI's r.prog. Measured as actual movement ALONG the track (nearest-
+	# index delta, unwrapped across the line) and only while on the tarmac:
+	# accruing raw speed anywhere let a player farm rank (and the 10× payout)
+	# by cutting the infield or just driving fast in circles.
+	if RaceManager.state == "countdown":
+		_player_prev_idx = RaceManager.idx
+	elif RaceManager.state == "racing" and in_car != null:
+		var pidx: int = RaceManager.idx
+		var step: int = pidx - _player_prev_idx
+		if step < -n / 2:
+			step += n
+		elif step > n / 2:
+			step -= n
+		if step > 0 and RaceManager.on_track:
+			_player_prog += float(step)
+		_player_prev_idx = pidx
 	var rank := 1
 	for r in racers:
 		# Frozen on the grid during the countdown; racing otherwise.
@@ -2859,9 +3149,9 @@ func _make_rocket(x: float, z: float) -> Dictionary:
 	var accent := Build.mat(Build.hex(0xc23a3a), 0.4)
 	var metal := Build.mat(Build.hex(0x9a9ca0), 0.3, 0.7)
 	var glass := Build.mat(Build.hex(0x141d28), 0.1, 0.4)
-	var flame := Build.emissive(Build.hex(0xffb030), Build.hex(0xff8020), 3.0)
 
-	# Booster (lower stage).
+	# Booster (lower stage) — carries its own small tail flame, shown briefly
+	# after separation while it tumbles away with a dying engine.
 	var booster := Node3D.new()
 	var b_body := Build.cyl(2.4, 2.6, ROCKET_BOOSTER_H, 16, white)
 	b_body.position = Vector3(0, ROCKET_BOOSTER_H / 2.0, 0)
@@ -2878,6 +3168,13 @@ func _make_rocket(x: float, z: float) -> Dictionary:
 	var bell := Build.cyl(1.5, 2.3, 2.6, 14, metal)
 	bell.position = Vector3(0, -0.9, 0)
 	booster.add_child(bell)
+	var b_flame_mat := Build.emissive(Build.hex(0xff8a20), Build.hex(0xff6a10), 3.0)
+	b_flame_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var b_flame := Build.cyl(1.1, 0.1, 3.0, 8, b_flame_mat)
+	b_flame.position = Vector3(0, -2.4, 0)
+	b_flame.visible = false
+	booster.add_child(b_flame)
+	booster.set_meta("flame", b_flame)
 	add_child(booster)
 
 	# Upper stage — the vehicle node. Origin at its base.
@@ -2897,10 +3194,49 @@ func _make_rocket(x: float, z: float) -> Dictionary:
 		win.position = Vector3(cos(wa) * 2.06, 9.6, sin(wa) * 2.06)
 		win.rotation.y = wa
 		g.add_child(win)
-	var plume := Build.sphere(1.7, flame)
-	plume.position = Vector3(0, -1.2, 0)
-	plume.visible = false
-	g.add_child(plume)
+
+	# Layered exhaust plume — bright core, orange mid, translucent outer, all
+	# fanning down from a shared nozzle glow. _update_rocket_fx() scales and
+	# flickers these with thrust each frame (see _update_rocket()).
+	var core_mat := Build.emissive(Build.hex(0xfff2c8), Build.hex(0xfff2c8), 4.5)
+	core_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var mid_mat := Build.emissive(Build.hex(0xff8a20), Build.hex(0xff7a10), 3.2)
+	mid_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var outer_mat := Build.emissive(Build.hex(0xff5020), Build.hex(0xff3a10), 1.6)
+	outer_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	outer_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	outer_mat.albedo_color.a = 0.4
+	var glow_mat := Build.emissive(Build.hex(0xfff8e0), Build.hex(0xfff8e0), 3.0)
+	glow_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+	var flame_core := Build.cyl(1.0, 0.05, 2.4, 10, core_mat)
+	flame_core.position = Vector3(0, -2.2, 0)
+	flame_core.visible = false
+	g.add_child(flame_core)
+	var flame_mid := Build.cyl(1.4, 0.15, 4.2, 10, mid_mat)
+	flame_mid.position = Vector3(0, -3.1, 0)
+	flame_mid.visible = false
+	g.add_child(flame_mid)
+	var flame_outer := Build.cyl(1.9, 0.3, 6.0, 10, outer_mat)
+	flame_outer.position = Vector3(0, -4.0, 0)
+	flame_outer.visible = false
+	g.add_child(flame_outer)
+	var nozzle_glow := Build.sphere(0.7, glow_mat)
+	nozzle_glow.position = Vector3(0, -1.0, 0)
+	nozzle_glow.visible = false
+	g.add_child(nozzle_glow)
+
+	# Re-entry heat-shield glow — a squashed emissive shell at the base,
+	# hidden until _update_rocket_fx() lights it up during "reentry".
+	var heat_mat := Build.emissive(Build.hex(0xff5a20), Build.hex(0xff7a30), 0.0)
+	heat_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	heat_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	heat_mat.albedo_color.a = 0.55
+	var heat_glow := Build.sphere(2.6, heat_mat)
+	heat_glow.scale = Vector3(1.0, 0.4, 1.0)
+	heat_glow.position = Vector3(0, 0.4, 0)
+	heat_glow.visible = false
+	g.add_child(heat_glow)
 	add_child(g)
 
 	var base_y := ROCKET_BASE_Y + ROCKET_BOOSTER_H
@@ -2908,7 +3244,11 @@ func _make_rocket(x: float, z: float) -> Dictionary:
 	booster.position = Vector3(x, ROCKET_BASE_Y, z)
 
 	return {
-		"node": g, "booster": booster, "plume": plume,
+		"node": g, "booster": booster,
+		"flame": {
+			"core": flame_core, "mid": flame_mid, "outer": flame_outer, "glow": nozzle_glow,
+			"heat": heat_glow, "core_mat": core_mat, "glow_mat": glow_mat, "heat_mat": heat_mat,
+		},
 		"pos": Vector3(x, base_y, z), "yaw": 0.0, "speed": 0.0, "throttle": 0.0,
 		"tilt": 0.0, "max_speed": 135.0, "max_alt": 9000.0,
 		"hp": 9999.0, "max_hp": 9999.0, "burning": false, "burn_timer": 0.0,
@@ -2955,10 +3295,11 @@ func _make_moon_buggy(x: float, z: float) -> Dictionary:
 			tire.rotation.z = PI / 2.0
 			tire.position = Vector3(sx * 1.2, 0.6, sz * 1.25)
 			g.add_child(tire)
-	g.position = Vector3(x, CityWorld.MOON_Y, z)
+	var start_y := world.moon_height(x, z)
+	g.position = Vector3(x, start_y, z)
 	add_child(g)
 	return {
-		"node": g, "pos": Vector3(x, CityWorld.MOON_Y, z), "yaw": 0.0,
+		"node": g, "pos": Vector3(x, start_y, z), "yaw": 0.0,
 		"speed": 0.0, "max_speed": 24.0, "hp": 200.0, "max_hp": 200.0,
 		"style": "buggy", "moon": true, "is_plane": false,
 		"burning": false, "burn_timer": 0.0,
@@ -2970,10 +3311,10 @@ func _spawn_moon_buggy() -> void:
 		CityWorld.MOON_PAD.z + 9.0))
 
 
-## Drive the buggy across the open lunar surface — flat at MOON_Y, low-gravity
-## float over the bumps, no city collision.
+## Drive the buggy across the lunar heightfield, low-gravity float over the
+## bumps, tilting to the local slope, no city collision.
 func _update_moon_buggy(v: Dictionary, dt: float) -> void:
-	var accel := _move_z()
+	var accel := _drive_accel()
 	var turn := -_move_x()
 	v.speed += accel * 20.0 * dt
 	v.speed *= 1.0 - dt * 0.9
@@ -2983,20 +3324,28 @@ func _update_moon_buggy(v: Dictionary, dt: float) -> void:
 		v.yaw += turn * 1.4 * dt * sgn * minf(1.0, absf(v.speed) / 6.0)
 	v.pos.x += sin(v.yaw) * v.speed * dt
 	v.pos.z += cos(v.yaw) * v.speed * dt
-	v.pos.y = CityWorld.MOON_Y
+	v.pos.y = world.moon_height(v.pos.x, v.pos.z)
 	var bounce: float = absf(sin(_now * 5.0)) * minf(absf(v.speed) * 0.04, 0.4)
-	v.node.position = Vector3(v.pos.x, CityWorld.MOON_Y + bounce, v.pos.z)
-	v.node.rotation.y = v.yaw
+	v.node.position = Vector3(v.pos.x, v.pos.y + bounce, v.pos.z)
+	# Tilt the chassis to the local slope, sampled fore/aft and side to side.
+	var fh: float = world.moon_height(v.pos.x + sin(v.yaw) * 1.6, v.pos.z + cos(v.yaw) * 1.6)
+	var bh: float = world.moon_height(v.pos.x - sin(v.yaw) * 1.6, v.pos.z - cos(v.yaw) * 1.6)
+	var rh: float = world.moon_height(v.pos.x + cos(v.yaw) * 1.1, v.pos.z - sin(v.yaw) * 1.1)
+	var lh: float = world.moon_height(v.pos.x - cos(v.yaw) * 1.1, v.pos.z + sin(v.yaw) * 1.1)
+	var pitch: float = atan2(bh - fh, 3.2)
+	var roll: float = atan2(lh - rh, 2.2)
+	v.node.rotation = Vector3(pitch, v.yaw, roll)
 	player_pos = v.pos
 
 
 ## The Y the rocket's base rests on, by trip leg. The booster only adds height
 ## while it is still attached (the launch); once dropped, the upper stage sits
-## on its own base.
-func _rocket_floor() -> float:
+## on its own base. On the Moon this reads the actual terrain under (x, z),
+## not a flat plane, so touchdown lands wherever the ground really is.
+func _rocket_floor(x: float, z: float) -> float:
 	match space_state:
 		"moon_descent", "moon_landed", "moon", "moon_ascent":
-			return CityWorld.MOON_Y
+			return world.moon_height(x, z)
 		"splashdown":
 			return 1.0
 		"reentry":
@@ -3027,23 +3376,28 @@ func _set_space_sky(on: bool) -> void:
 
 func _update_rocket(v: Dictionary, dt: float) -> void:
 	var scripted: bool = space_state == "moon_descent" or space_state == "reentry"
-	var thrust := 1.0 if (_key(KEY_W) or _key(KEY_UP)) else 0.0
-	var brake := 1.0 if (_key(KEY_S) or _key(KEY_DOWN)) else 0.0
+	var thrust: float = maxf(1.0 if (_action_held("move_forward") or _action_held("fly_up")) else 0.0,
+		maxf(0.0, _move_z()))
+	var brake: float = maxf(1.0 if (_action_held("move_back") or _action_held("fly_down")) else 0.0,
+		maxf(0.0, -_move_z()))
 	var turn := -_move_x()
+	var was_ground: bool = v.on_ground
 
 	if scripted:
 		var desc := -26.0 if space_state == "moon_descent" else -82.0
 		v.speed = move_toward(v.speed, desc, 70.0 * dt)
 	else:
-		v.throttle = move_toward(v.throttle, thrust, 1.3 * dt)
+		# Thrust builds slowly off the pad — a heavy, ~2s spool-up — but responds
+		# fast once flying, so mid-flight throttle control still feels immediate.
+		var ramp: float = 0.55 if v.on_ground else 1.3
+		v.throttle = move_toward(v.throttle, thrust, ramp * dt)
 		var target: float = v.throttle * v.max_speed - brake * 45.0
 		v.speed = move_toward(v.speed, target, v.max_speed * 0.5 * dt)
-	v.plume.visible = v.speed > 2.0 or v.throttle > 0.12
-	if v.throttle > 0.25 and randf() < 0.16:
-		AudioFX.rumble()
+	_update_rocket_fx(v)
+	_update_rocket_audio(v)
 
 	v.pos.y += v.speed * dt
-	var floor_y := _rocket_floor()
+	var floor_y := _rocket_floor(v.pos.x, v.pos.z)
 	if v.pos.y <= floor_y:
 		v.pos.y = floor_y
 		v.speed = maxf(v.speed, 0.0)
@@ -3061,12 +3415,122 @@ func _update_rocket(v: Dictionary, dt: float) -> void:
 		v.tilt = lerpf(v.tilt, 0.0, dt * 2.0)
 
 	v.node.position = v.pos
-	v.node.rotation = Vector3(v.tilt, v.yaw, 0.0)
+	# Engine gimbal wobble — a subtle vibration through the airframe while
+	# burning, cosmetic only (it never touches v.pos, so it can't nudge flight).
+	var wob: float = v.throttle * 0.02
+	v.node.rotation = Vector3(v.tilt + sin(_now * 17.0) * wob, v.yaw, sin(_now * 11.0) * wob)
 	if not v.separated:
 		v.booster.position = v.pos - Vector3(0, ROCKET_BOOSTER_H, 0)
 		v.booster.rotation = v.node.rotation
 	player_pos = v.pos
+
+	# Dust (or spray) kicks up the instant the base leaves or touches the ground.
+	if was_ground != v.on_ground:
+		_rocket_ground_fx(v)
+
 	_space_tick(v, dt)
+
+
+## Animates the layered exhaust plume + nozzle glow so thrust reads as real
+## fire (flicker and scale tracking throttle, a tight blue-white jet with no
+## smoke once in vacuum), plus the re-entry heat-shield glow, plus camera
+## shake tied to thrust.
+func _update_rocket_fx(v: Dictionary) -> void:
+	var flame: Dictionary = v.flame
+	var vacuum: bool = _in_space_sky()
+	var t: float = v.throttle
+	var lit: bool = t > 0.06 and space_state != "reentry" and space_state != "splashdown"
+	flame.core.visible = lit
+	flame.mid.visible = lit and not vacuum
+	flame.outer.visible = lit and not vacuum
+	flame.glow.visible = lit
+	if lit:
+		var flick: float = 0.85 + randf() * 0.3
+		var s: float = (0.5 + t * 0.65) * flick
+		if vacuum:
+			flame.core.scale = Vector3(s * 0.55, 1.1 + t * 1.0, s * 0.55)
+			flame.core_mat.emission = Build.hex(0xbfe6ff)
+		else:
+			flame.core.scale = Vector3(s, 1.0 + t * 0.35, s)
+			flame.mid.scale = Vector3(s * 1.05, 1.0 + t * 0.3, s * 1.05)
+			flame.outer.scale = Vector3(s * 1.15, 1.0 + t * 0.5, s * 1.15)
+			flame.core_mat.emission = Build.hex(0xfff2c8)
+			if randf() < 0.45 + t * 0.4:
+				var base: Vector3 = flame.core.global_position
+				_spawn_particle(base.x + (randf() - 0.5), base.y - randf() * 1.5, base.z + (randf() - 0.5),
+					[0xffb347, 0xff7a1a, 0x8a8a8a].pick_random(), 0.5 + randf() * 0.5,
+					(randf() - 0.5) * 2.0, -3.0 - randf() * 2.0, (randf() - 0.5) * 2.0)
+		flame.glow_mat.emission_energy_multiplier = 2.0 + t * 6.0 * flick
+		_add_cam_shake(t * (0.1 if vacuum else 0.3))
+
+	flame.heat.visible = space_state == "reentry"
+	if flame.heat.visible:
+		flame.heat_mat.emission_energy_multiplier = 2.0 + randf() * 3.0
+		if randf() < 0.6:
+			var p: Vector3 = v.node.global_position
+			_spawn_particle(p.x + (randf() - 0.5) * 3.0, p.y - 1.0, p.z + (randf() - 0.5) * 3.0,
+				[0xff6a2a, 0xffab4a, 0xffe0b0].pick_random(), 0.4 + randf() * 0.3,
+				(randf() - 0.5) * 4.0, -6.0 - randf() * 3.0, (randf() - 0.5) * 4.0)
+		_add_cam_shake(0.18)
+
+
+## Keeps the rocket's engine/wind loops matched to the current leg of the trip
+## and fires the one-shot ignition/thruster/splash cues at the right moments.
+## Self-correcting every frame, so a swapped-out or scripted leg can't leave a
+## loop stuck; _exit_rocket()/_respawn()/_phone_teleport() and _process()'s
+## paused early-out give it explicit stops too for the moments it isn't
+## being called at all (stepping out, dying, fast-travelling, pausing).
+func _update_rocket_audio(v: Dictionary) -> void:
+	match space_state:
+		"ascent", "space_climb", "space":
+			if not v.get("loop_on", false):
+				v.loop_on = true
+				AudioFX.rocket_ignite()
+				AudioFX.rocket_engine_start()
+			var fade: float = clampf(1.0 - v.pos.y / 1900.0, 0.0, 1.0)
+			AudioFX.rocket_engine_set(v.throttle, fade)
+		"moon_descent", "moon_ascent":
+			v.loop_on = false
+			AudioFX.rocket_engine_stop()
+			AudioFX.wind_stop()
+			if randf() < 0.14:
+				AudioFX.thruster()
+		"reentry":
+			v.loop_on = false
+			AudioFX.rocket_engine_stop()
+			if not v.get("wind_on", false):
+				v.wind_on = true
+				AudioFX.wind_start()
+			var prog: float = clampf(1.0 - (v.pos.y - 34.0) / 2400.0, 0.0, 1.0)
+			AudioFX.wind_set(prog)
+		_:
+			v.loop_on = false
+			v.wind_on = false
+			AudioFX.rocket_engine_stop()
+			AudioFX.wind_stop()
+
+
+## Kicked at the instant the rocket's base leaves or touches down — pad dust
+## on Earth liftoff, lunar dust on the Moon, spray at splashdown.
+func _rocket_ground_fx(v: Dictionary) -> void:
+	var p: Vector3 = v.pos
+	match space_state:
+		"moon_descent", "moon_landed", "moon", "moon_ascent":
+			for i in 10:
+				_spawn_particle(p.x + (randf() - 0.5) * 4.0, p.y + 0.2, p.z + (randf() - 0.5) * 4.0,
+					0x9c9ca0, 0.9 + randf() * 0.6,
+					(randf() - 0.5) * 6.0, 1.5 + randf() * 2.0, (randf() - 0.5) * 6.0)
+		"splashdown":
+			for i in 14:
+				_spawn_particle(p.x + (randf() - 0.5) * 3.0, 1.0, p.z + (randf() - 0.5) * 3.0,
+					0xdfeaf2, 0.5 + randf() * 0.4,
+					(randf() - 0.5) * 5.0, 4.0 + randf() * 3.0, (randf() - 0.5) * 5.0)
+			AudioFX.splash()
+		_:
+			for i in 12:
+				_spawn_particle(p.x + (randf() - 0.5) * 3.0, p.y - ROCKET_BOOSTER_H + 0.2,
+					p.z + (randf() - 0.5) * 3.0, 0xc9bd9e, 0.7 + randf() * 0.5,
+					(randf() - 0.5) * 7.0, 2.0 + randf() * 2.5, (randf() - 0.5) * 7.0)
 
 
 ## The state machine that drives the whole journey off altitude triggers.
@@ -3089,9 +3553,9 @@ func _space_tick(v: Dictionary, dt: float) -> void:
 				v.yaw = 0.0
 				_show_objective("APPROACHING THE MOON", 4.0)
 		"moon_descent":
-			if v.pos.y <= CityWorld.MOON_Y + 0.6:
+			if v.pos.y <= world.moon_height(v.pos.x, v.pos.z) + 0.6:
 				space_state = "moon_landed"
-				_show_objective("TOUCHDOWN ON THE MOON — press F to step out.", 9.0)
+				_show_objective("TOUCHDOWN ON THE MOON.", 9.0)
 		"moon_ascent":
 			if v.pos.y > CityWorld.MOON_Y + 900.0:
 				space_state = "reentry"
@@ -3105,14 +3569,24 @@ func _space_tick(v: Dictionary, dt: float) -> void:
 				v.pos.z + randf() * 5.0 - 2.5, 3)
 			if v.pos.y <= 34.0:
 				space_state = "splashdown"
-				_show_objective("SPLASHDOWN — press F for the recovery crew.", 10.0)
+				_show_objective("SPLASHDOWN — the recovery crew is on the way.", 10.0)
 
 
 func _separate_booster(v: Dictionary) -> void:
 	v.separated = true
+	var bp: Vector3 = v.booster.position
+	for i in 10:
+		_spawn_particle(bp.x + (randf() - 0.5) * 2.0, bp.y, bp.z + (randf() - 0.5) * 2.0,
+			[0xffb347, 0x9a9a9a].pick_random(), 0.6 + randf() * 0.4,
+			(randf() - 0.5) * 6.0, (randf() - 0.5) * 3.0, (randf() - 0.5) * 6.0)
+	if v.booster.has_meta("flame"):
+		var bf: MeshInstance3D = v.booster.get_meta("flame")
+		bf.visible = true
+		bf.scale = Vector3.ONE
 	_falling_boosters.append({
 		"node": v.booster, "vy": -3.0,
 		"spin": Vector3(randf() - 0.5, 0.0, randf() - 0.5) * 1.2,
+		"flame_t": 0.6,
 	})
 	_show_objective("BOOSTER SEPARATION", 4.0)
 
@@ -3125,6 +3599,14 @@ func _update_falling_boosters(dt: float) -> void:
 		b.vy -= 18.0 * dt
 		b.node.position.y += b.vy * dt
 		b.node.rotation += b.spin * dt
+		# The dying engine's tail flame guttering out over its first half-second
+		# of tumbling free.
+		b.flame_t -= dt
+		if b.node.has_meta("flame"):
+			var bf: MeshInstance3D = b.node.get_meta("flame")
+			bf.visible = b.flame_t > 0.0
+			if bf.visible:
+				bf.scale = Vector3.ONE * clampf(b.flame_t / 0.6, 0.0, 1.0)
 		if b.node.position.y < -60.0:
 			b.node.queue_free()
 		else:
@@ -3143,6 +3625,8 @@ func _exit_rocket(v: Dictionary) -> void:
 				cam_dist = 6.5
 				player_pos = Vector3(v.pos.x + 8.0, 0, v.pos.z)
 				player_node.visible = true
+				AudioFX.rocket_engine_stop()
+				AudioFX.wind_stop()
 				_show_objective("Stepped off the rocket.")
 			else:
 				_show_objective("You can't leave the rocket mid-flight.", 3.0)
@@ -3150,8 +3634,11 @@ func _exit_rocket(v: Dictionary) -> void:
 			space_state = "moon"
 			in_car = null
 			cam_dist = 6.5
-			player_pos = Vector3(v.pos.x + 7.0, CityWorld.MOON_Y, v.pos.z)
+			var ex: float = v.pos.x + 7.0
+			player_pos = Vector3(ex, world.moon_height(ex, v.pos.z), v.pos.z)
 			player_node.visible = true
+			AudioFX.rocket_engine_stop()
+			AudioFX.wind_stop()
 			_show_objective("On the Moon. Low gravity — walk around. "
 				+ "Board the rocket again to fly home.", 9.0)
 		"splashdown":
@@ -3169,6 +3656,8 @@ func _exit_rocket(v: Dictionary) -> void:
 			vehicles.erase(v)
 			space_state = ""
 			_set_space_sky(false)
+			AudioFX.rocket_engine_stop()
+			AudioFX.wind_stop()
 			_spawn_rocket()
 			_show_objective("The recovery crew brought you ashore. "
 				+ "A fresh rocket waits at the pad.", 8.0)
@@ -3417,11 +3906,13 @@ func _spawn_boats() -> void:
 
 
 func _update_boat(v: Dictionary, dt: float) -> void:
-	var accel := _move_z()
+	var accel := _drive_accel()
 	var turn := -_move_x()
-	# Submarines dive — Down submerges, Up surfaces.
+	# Submarines dive — Down submerges, Up surfaces (right stick Y on a pad, since
+	# the triggers already drive the throttle here).
 	if v.get("style", "") == "submarine":
-		var d := (1.0 if _key(KEY_DOWN) else 0.0) - (1.0 if _key(KEY_UP) else 0.0)
+		var d := (1.0 if _action_held("fly_down") else 0.0) - (1.0 if _action_held("fly_up") else 0.0)
+		d = clampf(d + Gamepad.look().y, -1.0, 1.0)
 		v.dive = clampf(v.get("dive", 0.0) + d * 3.5 * dt, 0.0, 3.2)
 	v.speed += accel * v.max_speed * 0.5 * dt
 	v.speed *= 1.0 - dt * 0.7
@@ -3564,6 +4055,10 @@ func _begin_motorcade() -> void:
 
 func _update_president(dt: float) -> void:
 	if pres_state == "home":
+		# Once the city is owned there is no President left to assassinate —
+		# don't roll out a fresh motorcade with a dead-end objective.
+		if city_owned:
+			return
 		pres_timer -= dt
 		if pres_timer <= 0.0:
 			_begin_motorcade()
@@ -3646,7 +4141,7 @@ func _update_president(dt: float) -> void:
 				and Vector2(player_pos.x - g.pos.x, player_pos.z - g.pos.z).length() < 75.0:
 				g.last_shot = _now + randf() * 0.5
 				var from := Vector3(g.pos.x, 1.4, g.pos.z)
-				var aim := (Vector3(player_pos.x, 1.2, player_pos.z) - from).normalized()
+				var aim := (Vector3(player_pos.x, player_pos.y + 1.2, player_pos.z) - from).normalized()
 				aim.x += (randf() - 0.5) * 0.07
 				aim.z += (randf() - 0.5) * 0.07
 				_spawn_bullet(from, aim.normalized(), WeaponDB.LIST[2], "cop")
@@ -4000,8 +4495,8 @@ func _update_daynight() -> void:
 	sun.rotation = Vector3(-elev_angle, theta, 0.0)
 	sun.light_energy = max(0.05, elev * 1.1 + 0.35)
 
-	var day := Color("5c7088")
-	var dusk := Color("9a6850")
+	var day := Color("c2ad8e")        # warm LA smog-haze instead of cool grey-blue
+	var dusk := Color("b06a44")
 	var night := Color("0a0a22")
 	var fog: Color
 	if elev > 0.2:
@@ -4013,8 +4508,8 @@ func _update_daynight() -> void:
 	env.fog_light_color = fog
 
 	var dayk := clampf((elev + 0.15) / 0.5, 0.0, 1.0)
-	sky_mat.sky_top_color = Color(0.02, 0.03, 0.09).lerp(Color(0.17, 0.36, 0.66), dayk)
-	sky_mat.sky_horizon_color = Color(0.07, 0.05, 0.13).lerp(Color(0.62, 0.68, 0.76), dayk)
+	sky_mat.sky_top_color = Color(0.02, 0.03, 0.09).lerp(Color(0.26, 0.45, 0.70), dayk)
+	sky_mat.sky_horizon_color = Color(0.07, 0.05, 0.13).lerp(Color(0.85, 0.80, 0.69), dayk)
 	sky_mat.ground_horizon_color = sky_mat.sky_horizon_color
 	sky_mat.ground_bottom_color = sky_mat.sky_horizon_color.darkened(0.4)
 	env.ambient_light_energy = 0.15 + dayk * 0.7
@@ -4034,7 +4529,22 @@ func _update_daynight() -> void:
 # =====================================================================
 # Camera & HUD
 # =====================================================================
-func _update_camera() -> void:
+## Requests camera shake of at least `amt` this frame — callers (rocket thrust,
+## re-entry buffet) call this every frame they want shake; it decays on its
+## own in _update_camera() the moment nobody asks for more.
+func _add_cam_shake(amt: float) -> void:
+	_shake_amt = maxf(_shake_amt, amt)
+
+
+func _update_camera(dt: float) -> void:
+	hud.set_scope(aiming and _is_sniper())
+	# Frame-rate-corrected smoothing: the raw constants below are per-60fps-
+	# frame alphas; fold dt in so camera lag feels identical at 30 or 144 Hz.
+	var k := dt * 60.0
+	_shake_amt = maxf(0.0, _shake_amt - dt * 2.2)
+	var shake := Vector3.ZERO
+	if _shake_amt > 0.001:
+		shake = Vector3(randf() - 0.5, randf() - 0.5, randf() - 0.5) * _shake_amt
 	if aiming:
 		# First-person zoomed aim — camera rides at the player's eye, looking
 		# straight down the crosshair; the body is hidden so it never blocks.
@@ -4046,9 +4556,10 @@ func _update_camera() -> void:
 			-sin(cam_yaw) * cos(cam_pitch),
 			-sin(cam_pitch),
 			-cos(cam_yaw) * cos(cam_pitch))
-		camera.position = camera.position.lerp(eye, 0.5)
+		camera.position = camera.position.lerp(eye, 1.0 - pow(0.5, k)) + shake
 		camera.look_at(camera.position + fwd)
-		camera.fov = lerp(camera.fov, CAM_FOV_AIM, 0.35)
+		var aim_fov: float = CAM_FOV_SNIPER if _is_sniper() else CAM_FOV_AIM
+		camera.fov = lerp(camera.fov, aim_fov, 1.0 - pow(0.65, k))
 		return
 	if suit_node != null and suit_state == "on":
 		suit_node.visible = true
@@ -4058,7 +4569,7 @@ func _update_camera() -> void:
 	var fov_target := CAM_FOV_HIP
 	if in_car != null and not in_car.is_plane:
 		fov_target += 14.0 * clampf(absf(in_car.get("speed", 0.0)) / maxf(in_car.get("max_speed", 1.0), 1.0), 0.0, 1.3)
-	camera.fov = lerp(camera.fov, fov_target, 0.35)
+	camera.fov = lerp(camera.fov, fov_target, 1.0 - pow(0.65, k))
 	var is_plane: bool = in_car != null and in_car.is_plane
 	var target: Vector3 = in_car.pos if in_car != null else player_pos
 	var off := Vector3(
@@ -4066,7 +4577,8 @@ func _update_camera() -> void:
 		cam_dist * sin(cam_pitch) + 2.0,
 		cos(cam_yaw) * cam_dist * cos(cam_pitch))
 	var desired := Vector3(target.x + off.x, max(1.2, target.y + off.y), target.z + off.z)
-	camera.position = camera.position.lerp(desired, 0.12 if is_plane else 0.15)
+	camera.position = camera.position.lerp(desired,
+		1.0 - pow(0.88 if is_plane else 0.85, k)) + shake
 	var look_h := 1.0 if is_plane else 1.5
 	camera.look_at(Vector3(target.x, target.y + look_h, target.z))
 

@@ -69,16 +69,15 @@ func _build_list() -> PanelContainer:
 
 	col.add_child(_rule())
 
-	var ch := HBoxContainer.new()
-	ch.add_theme_constant_override("separation", 16)
-	col.add_child(ch)
-	ch.add_child(_cell("PROPERTY", W_NAME, FAINT, 12, HORIZONTAL_ALIGNMENT_LEFT))
-	ch.add_child(_cell("STATUS", W_STATUS, FAINT, 12, HORIZONTAL_ALIGNMENT_LEFT))
-	ch.add_child(_cell("PRICE", W_PRICE, FAINT, 12, HORIZONTAL_ALIGNMENT_RIGHT))
-	ch.add_child(_cell("", 168, FAINT, 12, HORIZONTAL_ALIGNMENT_CENTER))
-
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("v_separation", 14)
+	var gc := CenterContainer.new()
+	gc.add_child(grid)
+	col.add_child(gc)
 	for i in PropertyCatalog.LIST.size():
-		col.add_child(_build_row(i))
+		grid.add_child(_build_row(i))
 
 	col.add_child(_rule())
 	var foot := HBoxContainer.new()
@@ -96,31 +95,46 @@ func _build_list() -> PanelContainer:
 
 func _build_row(idx: int) -> PanelContainer:
 	var prop: Dictionary = PropertyCatalog.LIST[idx]
-	var wrap := PanelContainer.new()
-	var rsb := StyleBoxFlat.new()
-	rsb.bg_color = ROW_BG
-	rsb.set_corner_radius_all(3)
-	rsb.set_content_margin_all(9)
-	rsb.content_margin_left = 14
-	rsb.content_margin_right = 14
-	wrap.add_theme_stylebox_override("panel", rsb)
+	var card := PanelContainer.new()
+	var csb := StyleBoxFlat.new()
+	csb.bg_color = ROW_BG
+	csb.set_corner_radius_all(6)
+	csb.set_border_width_all(1)
+	csb.border_color = Color(0.30, 0.34, 0.34, 0.5)
+	csb.set_content_margin_all(10)
+	card.add_theme_stylebox_override("panel", csb)
 
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 16)
-	wrap.add_child(row)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 5)
+	v.custom_minimum_size = Vector2(212, 0)
+	card.add_child(v)
 
-	row.add_child(_cell(prop.name, W_NAME, TEXT, 21, HORIZONTAL_ALIGNMENT_LEFT))
-	var status := _cell("", W_STATUS, DIM, 16, HORIZONTAL_ALIGNMENT_LEFT)
-	row.add_child(status)
-	var price := _cell("", W_PRICE, GOLD, 20, HORIZONTAL_ALIGNMENT_RIGHT)
-	row.add_child(price)
+	var img := TextureRect.new()
+	img.texture = load("res://assets/thumbs/prop_%d.png" % idx)
+	img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	img.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	img.custom_minimum_size = Vector2(192, 116)
+	var ib := StyleBoxFlat.new()
+	ib.bg_color = Color(0.07, 0.08, 0.10, 1.0)
+	ib.set_corner_radius_all(4)
+	var iwrap := PanelContainer.new()
+	iwrap.add_theme_stylebox_override("panel", ib)
+	iwrap.add_child(img)
+	v.add_child(iwrap)
 
-	var act := _make_button("BUY", 168, MONEY)
+	v.add_child(_lbl(prop.name, 19, TEXT))
+	var status := _lbl("", 14, DIM)
+	v.add_child(status)
+	var price := _lbl("", 20, GOLD)
+	v.add_child(price)
+
+	var act := _make_button("BUY", 212, MONEY)
+	act.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	act.pressed.connect(_on_action.bind(idx))
-	row.add_child(act)
+	v.add_child(act)
 
 	_rows.append({"status": status, "price": price, "act": act})
-	return wrap
+	return card
 
 
 # ---------------- Navigation ----------------
@@ -128,6 +142,7 @@ func open() -> void:
 	_open = true
 	_root.visible = true
 	_refresh()
+	UiNav.apply.call_deferred(_root)
 
 
 func _close() -> void:
@@ -149,6 +164,11 @@ func _on_action(idx: int) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _open:
+		return
+	if event is InputEventJoypadButton and event.pressed \
+		and event.button_index == JOY_BUTTON_B:
+		_close()
+		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE or event.keycode == KEY_E:

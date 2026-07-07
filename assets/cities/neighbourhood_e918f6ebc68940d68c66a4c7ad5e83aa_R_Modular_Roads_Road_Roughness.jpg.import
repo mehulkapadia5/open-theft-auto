@@ -1,0 +1,45 @@
+[remap]
+
+importer="texture"
+type="CompressedTexture2D"
+uid="uid://biqxm53nd0gqe"
+path.s3tc="res://.godot/imported/neighbourhood_e918f6ebc68940d68c66a4c7ad5e83aa_R_Modular_Roads_Road_Roughness.jpg-dde6d596546aa1ca4c39e3e8268da5fa.s3tc.ctex"
+path.etc2="res://.godot/imported/neighbourhood_e918f6ebc68940d68c66a4c7ad5e83aa_R_Modular_Roads_Road_Roughness.jpg-dde6d596546aa1ca4c39e3e8268da5fa.etc2.ctex"
+metadata={
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
+}
+generator_parameters={
+"md5": "6d0ff047f997da15e88ba3ac72dc99b4"
+}
+
+[deps]
+
+source_file="res://assets/cities/neighbourhood_e918f6ebc68940d68c66a4c7ad5e83aa_R_Modular_Roads_Road_Roughness.jpg"
+dest_files=["res://.godot/imported/neighbourhood_e918f6ebc68940d68c66a4c7ad5e83aa_R_Modular_Roads_Road_Roughness.jpg-dde6d596546aa1ca4c39e3e8268da5fa.s3tc.ctex", "res://.godot/imported/neighbourhood_e918f6ebc68940d68c66a4c7ad5e83aa_R_Modular_Roads_Road_Roughness.jpg-dde6d596546aa1ca4c39e3e8268da5fa.etc2.ctex"]
+
+[params]
+
+compress/mode=2
+compress/high_quality=false
+compress/lossy_quality=0.7
+compress/uastc_level=0
+compress/rdo_quality_loss=0.0
+compress/hdr_compression=1
+compress/normal_map=0
+compress/channel_pack=0
+mipmaps/generate=true
+mipmaps/limit=-1
+roughness/mode=0
+roughness/src_normal=""
+process/channel_remap/red=0
+process/channel_remap/green=1
+process/channel_remap/blue=2
+process/channel_remap/alpha=3
+process/fix_alpha_border=true
+process/premult_alpha=false
+process/normal_map_invert_y=false
+process/hdr_as_srgb=false
+process/hdr_clamp_exposure=false
+process/size_limit=0
+detect_3d/compress_to=0

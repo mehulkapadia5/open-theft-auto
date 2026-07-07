@@ -10,8 +10,8 @@ const WORLD := BLOCK * GRID          # 352 — the dense city core
 const WORLD_HALF := WORLD / 2.0      # 176
 const OUTER_HALF := WORLD_HALF + 250.0   # wide green wilderness ring around the city
 const LAND_HALF := OUTER_HALF + 380.0    # 806 — where the landmass meets the sea;
-                                         # roomy enough that the mountain ring
-                                         # (bases out to ~620+150) stays ashore
+										 # roomy enough that the mountain ring
+										 # (bases out to ~620+150) stays ashore
 
 # Airport island — a grass airfield in the bay south of the city, reached by a
 # single causeway. Kept entirely clear of the city grid and the racing circuit.
@@ -90,11 +90,12 @@ func _bridge_profile(x: float) -> float:
 
 ## Height of the walkable surface at a point — 0 on flat ground, raised on the
 ## elevated river bridges and the dock jetties. Cars and the player ride this.
-func surface_height(x: float, z: float) -> float:
+func surface_height(x: float, z: float, alt := 0.0) -> float:
 	var h := 0.0
-	# While the office is occupied, lift the player onto its floor — it sits
-	# high over the bay, far from any normal walkable ground.
-	if trading_floor_active:
+	# While the office is occupied, lift the player onto its floor — but only
+	# for a caller already at office altitude; a ground-level caller in the
+	# same footprint (the downtown plaza) must get street height, not y=66.
+	if trading_floor_active and alt > 30.0:
 		var tf := TRADING_FLOOR
 		if absf(x - tf.x) < 11.5 and absf(z - tf.z) < 8.5:
 			return tf.y
@@ -111,7 +112,8 @@ func surface_height(x: float, z: float) -> float:
 	return h
 
 # Realistic city palette — concrete, stucco, slate, sandstone, weathered brick.
-const PALETTE := [0x8a8a82, 0x9a8f7a, 0x6e7479, 0x7a6a58, 0x5f6b66, 0xa7a098, 0x55606b, 0x8a7256]
+# LA stucco / cream / pastel mid-rise tones — sun-bleached, warm.
+const PALETTE := [0xd9c9a8, 0xe4d6ba, 0xcdb89a, 0xd9b69c, 0xe8dac4, 0xc7a886, 0xead9c6, 0xd8c0a4, 0xe0c9b4]
 # Glassy blue-grey towers for the downtown core.
 const DOWNTOWN_PALETTE := [0x3d4e63, 0x46586c, 0x33414f, 0x556375, 0x2f3d4c]
 # Warm stucco tones for residential villas, plus tiled / slate roofs.
@@ -131,6 +133,18 @@ const LAUNCH := {"x": 210.0, "z": -250.0}
 # The Moon — a grey surface built high above the world; the rocket flies up to it.
 const MOON_Y := 4000.0
 const MOON_PAD := {"x": 0.0, "z": 0.0}
+const MOON_BASE_OFFSET_Z := -60.0    # the outpost sits this far from the pad
+# Lunar heightfield tuning — a real rolling, cratered surface (see moon_height()),
+# flattened around the pad and base so the rocket/buggy always have solid,
+# level ground there, curving down beyond MOON_PLAYABLE_R so the horizon reads
+# as a small body's curve instead of an infinite flat sheet.
+const MOON_PLAYABLE_R := 340.0       # radius of the walkable/driveable surface
+const MOON_HORIZON_R := 620.0        # the heightfield mesh extends out this far
+const MOON_GRID_STEP := 16.0         # heightfield vertex spacing (one-time build)
+const MOON_PAD_FLAT_R := 24.0
+const MOON_PAD_BLEND_R := 40.0
+const MOON_BASE_FLAT_R := 30.0
+const MOON_BASE_BLEND_R := 48.0
 # The exchange trading floor — an enterable glass penthouse crowning the stock
 # exchange tower (block 5,5: tower centred at x0, z3, roof at y66). Reached by
 # teleport from the kiosk; floor and walls only affect the player while occupied.
@@ -139,6 +153,10 @@ const OFFICE_EXIT := {"x": 0.0, "z": -0.5}    # exit pad, and the arrival point
 const OFFICE_DESK := {"x": 0.0, "z": 8.0}     # standing spot in front of the desk
 
 var buildings: Array = []            # collision AABBs {x,z,w,d,h}
+# Imported drop-in city patches, placed on the open land east of the city.
+const PATCH_NYC: PackedScene = preload("res://assets/cities/nyc.glb")
+const PATCH_HOOD: PackedScene = preload("res://assets/cities/neighbourhood.glb")
+var _patch_zones: Array = []         # {x,z,w,d} keep-clear footprints for patches
 # Spatial hash over `buildings` so collides_at() only tests nearby AABBs
 # instead of scanning the whole city. Rebuilt lazily whenever the list grows.
 const _BGRID_CELL := 24.0
@@ -161,11 +179,19 @@ var _window_xforms: Array[Transform3D] = []
 var _road_mat: StandardMaterial3D
 var _stripe_mat: StandardMaterial3D
 var _sidewalk_mat: StandardMaterial3D
+var _moon_noise: FastNoiseLite       # gentle rolling-hill noise for the lunar terrain
+var _moon_craters: Array = []        # {x, z, r, depth} — baked once, shared by the
+									 # heightfield mesh and moon_height()
 
 func generate() -> void:
-	_road_mat = Build.mat(Build.hex(0x2c2c33), 0.85)
+	# Real asphalt + lane markings from the modular road pack (CC0) — tiled along
+	# every street (see _add_road_strip). White albedo so the texture shows true.
+	_road_mat = Build.mat(Build.hex(0xffffff), 0.9)
+	_road_mat.albedo_texture = load("res://assets/textures/road.png")
 	_stripe_mat = Build.mat(Build.hex(0xd9c020), 0.85)
-	_sidewalk_mat = Build.mat(Build.hex(0x9a9aa3), 0.9)
+	# Paved footpath from the road pack (CC0), tiled in _add_road_strip.
+	_sidewalk_mat = Build.mat(Build.hex(0xffffff), 0.9)
+	_sidewalk_mat.albedo_texture = load("res://assets/textures/footpath.png")
 	window_mat = Build.emissive(Build.hex(0xb8a060), Build.hex(0xfff0b0), 0.0)
 	window_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 
@@ -182,7 +208,12 @@ func generate() -> void:
 	track = Track.new()
 	add_child(track)
 	track.build()
+	# The circuit's solid structures (paddock HQ, grandstands, pit garages,
+	# the infield mansion) block like any city building.
+	buildings.append_array(track.solids)
+	_add_city_patches()
 	_add_mountains()
+	_add_hollywood_sign()
 	_add_suburbs()
 	_add_outer_landscape()
 	_add_clouds(45)
@@ -278,45 +309,42 @@ func _build_launch_base() -> void:
 	add_child(sign)
 
 
-## The Moon — a grey cratered surface built high above the world. The rocket
-## flies up here; the player walks the surface in low gravity.
+## The Moon — a real rolling, cratered heightfield built high above the world.
+## The rocket flies up here; the player walks the surface in low gravity.
 func _build_moon() -> void:
 	var my: float = MOON_Y
 	var mx: float = MOON_PAD.x
 	var mz: float = MOON_PAD.z
-	var grey := Build.mat(Build.hex(0x9c9ca0), 1.0)
 	var dgrey := Build.mat(Build.hex(0x7a7a80), 1.0)
 
-	var surf := Build.cyl(340.0, 340.0, 4.0, 40, grey)
-	surf.position = Vector3(mx, my - 2.0, mz)
-	add_child(surf)
+	_init_moon_terrain()
+	_build_moon_surface()
+	_build_moon_stars()
 
+	# Rocks scattered over the surface, resting on whatever the terrain does
+	# underfoot (a bowl, a rim, open ground) instead of floating on a flat plane.
 	var rng := RandomNumberGenerator.new()
-	rng.seed = 1969
-	for i in 44:
-		var a := rng.randf() * TAU
-		var d := rng.randf() * 300.0
-		var cr := 6.0 + rng.randf() * 22.0
-		var crater := Build.cyl(cr, cr * 1.3, 1.8, 14, dgrey)
-		crater.position = Vector3(mx + cos(a) * d, my + 0.2, mz + sin(a) * d)
-		add_child(crater)
-	for i in 32:
+	rng.seed = 1970
+	for i in 34:
 		var a2 := rng.randf() * TAU
-		var d2 := rng.randf() * 310.0
+		var d2 := 20.0 + rng.randf() * (MOON_PLAYABLE_R - 30.0)
 		var rr := 1.5 + rng.randf() * 3.4
+		var rx := mx + cos(a2) * d2
+		var rz := mz + sin(a2) * d2
 		var rock := Build.cyl(rr * 0.7, rr, rr * 1.4, 6, dgrey)
-		rock.position = Vector3(mx + cos(a2) * d2, my + rr * 0.7, mz + sin(a2) * d2)
+		rock.position = Vector3(rx, moon_height(rx, rz) + rr * 0.7, rz)
 		add_child(rock)
 
-	# Earth hanging in the black sky.
+	# Earth hanging in the black sky, for scale and atmosphere.
 	var earth_m := Build.emissive(Build.hex(0x2f6cb4), Build.hex(0x3f86d0), 0.7)
 	var earth := Build.sphere(74.0, earth_m)
 	earth.position = Vector3(mx + 130.0, my + 190.0, mz - 380.0)
 	add_child(earth)
 
-	# Landing pad.
+	# Landing pad — the terrain is flattened to exactly `my` here (see
+	# moon_height()), so the pad's underside sits flush with the ground.
 	var lpad := Build.cyl(11.0, 11.0, 0.5, 24, Build.mat(Build.hex(0x45494f), 0.8))
-	lpad.position = Vector3(mx, my + 0.4, mz)
+	lpad.position = Vector3(mx, my + 0.25, mz)
 	add_child(lpad)
 	var flag_pole := Build.cyl(0.12, 0.12, 6.0, 6, Build.mat(Build.hex(0xcfd2d6), 0.4))
 	flag_pole.position = Vector3(mx + 8.0, my + 3.0, mz + 6.0)
@@ -325,23 +353,153 @@ func _build_moon() -> void:
 	flag.position = Vector3(mx + 8.0, my + 5.0, mz + 7.4)
 	add_child(flag)
 
-	_build_moon_base(mx, mz - 60.0, my)
-	# A loop of glowing gates — the low-gravity buggy course.
+	_build_moon_base(mx, mz + MOON_BASE_OFFSET_Z, my)
+	# A loop of glowing gates — the low-gravity buggy course — planted on the
+	# actual terrain height at each post.
 	var gate_m := Build.emissive(Build.hex(0x14303a), Color("4fd6ff"), 2.4)
 	for gi in 9:
 		var ga := gi * TAU / 9.0
 		var gd := 150.0 + sin(gi * 1.7) * 40.0
 		var gx := mx + cos(ga) * gd
 		var gz := mz + sin(ga) * gd
+		var gy := moon_height(gx, gz)
 		for gpost in [-4.0, 4.0]:
 			var post := Build.box(0.7, 7.0, 0.7, gate_m)
-			post.position = Vector3(gx + cos(ga + PI / 2.0) * gpost, my + 3.5,
+			post.position = Vector3(gx + cos(ga + PI / 2.0) * gpost, gy + 3.5,
 				gz + sin(ga + PI / 2.0) * gpost)
 			add_child(post)
 		var bar := Build.box(9.0, 0.7, 0.7, gate_m)
-		bar.position = Vector3(gx, my + 7.0, gz)
+		bar.position = Vector3(gx, gy + 7.0, gz)
 		bar.rotation.y = ga + PI / 2.0
 		add_child(bar)
+
+
+## Seeds the noise field and bakes the crater list once. Both moon_height()
+## and _build_moon_surface() read from this, so the visible mesh and the
+## analytic height everything else stands on are always exactly in sync.
+func _init_moon_terrain() -> void:
+	_moon_noise = FastNoiseLite.new()
+	_moon_noise.seed = 1969
+	_moon_noise.frequency = 0.015
+	_moon_noise.fractal_octaves = 3
+	_moon_craters = []
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1969
+	for i in 40:
+		var a := rng.randf() * TAU
+		var d := 50.0 + rng.randf() * (MOON_PLAYABLE_R - 60.0)
+		var r := 8.0 + rng.randf() * 26.0
+		_moon_craters.append({
+			"x": MOON_PAD.x + cos(a) * d, "z": MOON_PAD.z + sin(a) * d,
+			"r": r, "depth": r * (0.16 + rng.randf() * 0.14),
+		})
+
+
+## Absolute Y of the lunar terrain at (x, z): gentle rolling noise plus real
+## crater bowls (a depression with a raised rim, not an extruded pancake),
+## flattened around the landing pad and the base, and curving down beyond
+## MOON_PLAYABLE_R so the horizon reads as a small body's curve rather than an
+## infinite flat sheet. Cheap trig + a short crater loop — safe to call every
+## frame for whatever is walking, driving or flying up here.
+func moon_height(x: float, z: float) -> float:
+	var lx := x - MOON_PAD.x
+	var lz := z - MOON_PAD.z
+	var d := sqrt(lx * lx + lz * lz)
+	var h: float = _moon_noise.get_noise_2d(x, z) * 3.4
+	for c in _moon_craters:
+		var cd := Vector2(x - c.x, z - c.z).length()
+		if cd < c.r * 1.4:
+			h += _moon_crater_profile(cd, c.r, c.depth)
+	var pad_w := _moon_flatten_weight(d, MOON_PAD_FLAT_R, MOON_PAD_BLEND_R)
+	var bd := Vector2(x - MOON_PAD.x, z - (MOON_PAD.z + MOON_BASE_OFFSET_Z)).length()
+	var base_w := _moon_flatten_weight(bd, MOON_BASE_FLAT_R, MOON_BASE_BLEND_R)
+	h = lerp(h, 0.0, maxf(pad_w, base_w))
+	if d > MOON_PLAYABLE_R:
+		var t: float = clampf((d - MOON_PLAYABLE_R) / (MOON_HORIZON_R - MOON_PLAYABLE_R), 0.0, 1.0)
+		h -= t * t * 240.0
+	return MOON_Y + h
+
+
+## A crater's height contribution at distance `d` from its centre: a smooth
+## bowl of `depth` inside radius `r`, with a small raised rim just outside it.
+func _moon_crater_profile(d: float, r: float, depth: float) -> float:
+	var t := d / r
+	if t <= 1.0:
+		return -depth * (1.0 - t * t)
+	var rt: float = clampf((t - 1.0) / 0.4, 0.0, 1.0)
+	return depth * 0.35 * sin(rt * PI)
+
+
+## 1.0 inside `flat_r`, smoothly falling to 0.0 by `blend_r` — used to flatten
+## the terrain around the pad and the base without a hard seam.
+func _moon_flatten_weight(d: float, flat_r: float, blend_r: float) -> float:
+	return 1.0 - smoothstep(flat_r, blend_r, d)
+
+
+## Builds the lunar surface as a subdivided heightfield mesh — every vertex
+## reads its Y straight from moon_height(), so the ground you see is exactly
+## the ground moon_height() reports back to whatever is standing on it.
+func _build_moon_surface() -> void:
+	var grey := Build.mat(Build.hex(0x9c9ca0), 1.0)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var half := MOON_HORIZON_R
+	var steps := int(half * 2.0 / MOON_GRID_STEP)
+	for gx in steps:
+		var x0 := MOON_PAD.x - half + gx * MOON_GRID_STEP
+		var x1 := x0 + MOON_GRID_STEP
+		for gz in steps:
+			var z0 := MOON_PAD.z - half + gz * MOON_GRID_STEP
+			var z1 := z0 + MOON_GRID_STEP
+			var p00 := Vector3(x0, moon_height(x0, z0) - MOON_Y, z0)
+			var p10 := Vector3(x1, moon_height(x1, z0) - MOON_Y, z0)
+			var p01 := Vector3(x0, moon_height(x0, z1) - MOON_Y, z1)
+			var p11 := Vector3(x1, moon_height(x1, z1) - MOON_Y, z1)
+			_moon_tri(st, p00, p10, p11)
+			_moon_tri(st, p00, p11, p01)
+	st.generate_normals()
+	var mesh := st.commit()
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = grey
+	mi.position = Vector3(0, MOON_Y, 0)
+	add_child(mi)
+
+
+func _moon_tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3) -> void:
+	st.add_vertex(a)
+	st.add_vertex(b)
+	st.add_vertex(c)
+
+
+## A dome of small unlit billboard "stars" plus a sprinkle of dimmer distant
+## ones — cheap backdrop so the black lunar sky isn't just an empty void.
+func _build_moon_stars() -> void:
+	var star_mat := Build.emissive(Color.WHITE, Color(1.0, 1.0, 1.0), 3.0)
+	star_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	star_mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	var qm := QuadMesh.new()
+	qm.size = Vector2(4.0, 4.0)
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = qm
+	var count := 700
+	mm.instance_count = count
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 2001
+	for i in count:
+		var a := rng.randf() * TAU
+		var el := 0.05 + rng.randf() * (PI * 0.48)
+		var rad := 1300.0 + rng.randf() * 500.0
+		var p := Vector3(cos(a) * cos(el), sin(el), sin(a) * cos(el)) * rad
+		var sc := 0.5 + rng.randf() * 1.6
+		mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ONE * sc), p))
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.material_override = star_mat
+	mmi.position = Vector3(MOON_PAD.x, MOON_Y, MOON_PAD.z)
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
 
 
 ## A lunar outpost — habitat domes, modules, solar arrays and a comms dish.
@@ -401,32 +559,45 @@ func _build_moon_base(bx: float, bz: float, by: float) -> void:
 
 
 func _add_road_strip(x: float, z: float, w: float, d: float) -> void:
-	# Flat ground geometry can't cast a visible shadow — keep it out of the
-	# directional shadow pass entirely.
-	var sw := Build.box(w + 3.0, 0.04, d + 3.0, _sidewalk_mat)
-	sw.position = Vector3(x, 0.02, z)
+	var horizontal := w > d
+	var road_w: float = d if horizontal else w
+	var road_len: float = w if horizontal else d
+	# Layered heights so coplanar surfaces never flicker (z-fight). E-W strips
+	# sit above N-S strips; on each, the road sits above its footpath.
+	#   ground 0 < N-S path 0.05 < E-W path 0.07 < N-S road 0.11 < E-W road 0.13
+	var path_y: float = 0.07 if horizontal else 0.05
+	var road_y: float = 0.13 if horizontal else 0.11
+
+	# Footpath — a textured paving slab wider than the road, so there's a paved
+	# walkway between the tarmac and the buildings. Tiled paving texture.
+	var path_w := road_w + 14.0
+	var path_len := road_len + 14.0
+	var sp := PlaneMesh.new()
+	sp.size = Vector2(path_w, path_len)
+	var sw := MeshInstance3D.new()
+	sw.mesh = sp
+	var smat := _sidewalk_mat.duplicate() as StandardMaterial3D
+	smat.uv1_scale = Vector3(path_w / 6.0, path_len / 6.0, 1.0)   # ~6 m paving slabs
+	sw.material_override = smat
+	sw.position = Vector3(x, path_y, z)
+	if horizontal:
+		sw.rotation.y = PI / 2.0
 	sw.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(sw)
-	var r := Build.box(w, 0.05, d, _road_mat)
-	r.position = Vector3(x, 0.04, z)
+
+	# Road surface — textured asphalt + lane markings, tiled down its length.
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(road_w, road_len)
+	var r := MeshInstance3D.new()
+	r.mesh = pm
+	var mat := _road_mat.duplicate() as StandardMaterial3D
+	mat.uv1_scale = Vector3(road_w / ROAD_W, road_len / ROAD_W, 1.0)
+	r.material_override = mat
+	r.position = Vector3(x, road_y, z)
+	if horizontal:
+		r.rotation.y = PI / 2.0
 	r.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(r)
-	if w > d:
-		var i := -w / 2.0 + 2.0
-		while i < w / 2.0 - 1.0:
-			var s := Build.box(2.0, 0.06, 0.3, _stripe_mat)
-			s.position = Vector3(x + i, 0.07, z)
-			s.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(s)
-			i += 4.0
-	else:
-		var j := -d / 2.0 + 2.0
-		while j < d / 2.0 - 1.0:
-			var s := Build.box(0.3, 0.06, 2.0, _stripe_mat)
-			s.position = Vector3(x, 0.07, z + j)
-			s.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(s)
-			j += 4.0
 
 func _add_building(x: float, z: float, w: float, d: float, h: float, color: int) -> void:
 	var m := Build.box(w, h, d, Build.cmat(Build.hex(color), 0.84, 0.04))
@@ -513,13 +684,15 @@ func _build_city() -> void:
 				_:
 					_add_villa(cx, cz)
 
-	for i in 26:
+	for i in 44:
 		var x := (randf() - 0.5) * WORLD * 0.9
 		var z := WORLD_HALF - 8.0 + (randf() - 0.5) * 14.0
-		if _in_airport_zone(x, z):
+		# Beach palms carry solid collision — keep them off the F1 circuit's
+		# southern straight and its runoff apron.
+		if _in_airport_zone(x, z) or _track_line_dist(x, z) < 22.0:
 			continue
 		_add_palm(x, z)
-	for i in 90:
+	for i in 110:
 		var x := (randf() - 0.5) * WORLD * 0.92
 		var z := (randf() - 0.5) * WORLD * 0.85
 		if _in_airport_zone(x, z) or absf(x - RIVER_CX) < 13.0:
@@ -535,7 +708,11 @@ func _build_city() -> void:
 		var off := ROAD_W / 2.0 + 3.0
 		if dxl < off or dzl < off:
 			continue
-		_add_leafy_tree(x, z)
+		# LA streets skew heavily to palms, with the odd leafy tree mixed in.
+		if randf() < 0.65:
+			_add_palm(x, z)
+		else:
+			_add_leafy_tree(x, z)
 
 
 ## Classifies a block into a city district.
@@ -909,7 +1086,13 @@ func _add_display_car(x: float, z: float, color: int, style: String,
 	pad.position = Vector3(x, 0.21 + lift, z)
 	add_child(pad)
 	var car := CarMesh.build(color, style, open_hood)
-	car.position = Vector3(x, 0.29 + lift, z)
+	# Cars rest their tyres on the pad top. The F1 model carries a road
+	# ride-height (CarMesh.F1_RIDE) so it doesn't sink into tarmac elsewhere;
+	# on this hard pad that lift would float it, so cancel it back out.
+	var car_y := 0.29 + lift
+	if style == "f1":
+		car_y -= CarMesh.F1_RIDE
+	car.position = Vector3(x, car_y, z)
 	car.rotation.y = yaw
 	add_child(car)
 
@@ -1873,6 +2056,23 @@ func _build_presidential_residence() -> void:
 			Vector2(10, 272), Vector2(10, 408)]:
 		_add_palm(pp.x, pp.y)
 
+## Approximate distance from (x,z) to the F1 circuit's centreline, computed
+## from Track.NODES so it works during generation, BEFORE the Track node is
+## built. The node polyline stays within a couple of metres of the baked
+## Catmull-Rom line — close enough for prop-placement exclusion.
+func _track_line_dist(x: float, z: float) -> float:
+	var n: int = Track.NODES.size()
+	var p := Vector2(x, z)
+	var best := INF
+	for i in n:
+		var a: Vector2 = Track.NODES[i]
+		var b: Vector2 = Track.NODES[(i + 1) % n]
+		var ab := b - a
+		var t := clampf((p - a).dot(ab) / ab.length_squared(), 0.0, 1.0)
+		best = minf(best, p.distance_to(a + ab * t))
+	return best
+
+
 func _place_lamps() -> void:
 	var pole_m := Build.mat(Build.hex(0x1a1a1a), 0.4, 0.7)
 	for i in range(GRID + 1):
@@ -1884,6 +2084,10 @@ func _place_lamps() -> void:
 			if abs(lx) > WORLD_HALF or abs(lz) > WORLD_HALF:
 				continue
 			if _in_airport_zone(lx, lz):
+				continue
+			# The circuit's southern straight runs through the city's edge —
+			# no lamp posts standing in the middle of the F1 tarmac.
+			if _track_line_dist(lx, lz) < 22.0:
 				continue
 			var pole := Build.cyl(0.08, 0.12, 5.0, 8, pole_m)
 			pole.position = Vector3(lx, 2.5, lz)
@@ -2090,6 +2294,112 @@ func _build_control_tower(cx: float, cz: float) -> void:
 	cap.position = Vector3(cx, 34.5, cz)
 	add_child(cap)
 
+## Drop the two imported city patches onto the open land east of the city (the
+## airport side) — the south is open sea, so the east flank is the buildable
+## ground. Each building gets a collision box derived from its mesh, and the
+## patch footprints are registered so mountains / suburbs stay clear.
+func _add_city_patches() -> void:
+	# Placed well east of the F1 circuit (its east edge runs at x≈390) on the
+	# open land, clear of the track and of each other.
+	_place_patch(PATCH_NYC, 500.0, 25.0, 0.55, 6.0)
+	_place_patch(PATCH_HOOD, 500.0, -120.0, 2.0, 6.0)
+
+
+func _place_patch(scene: PackedScene, px: float, pz: float, sc: float, collide_min: float) -> void:
+	var inst: Node3D = scene.instantiate()
+	inst.position = Vector3(px, 0.0, pz)
+	inst.scale = Vector3(sc, sc, sc)
+	add_child(inst)
+	var minx := INF
+	var maxx := -INF
+	var minz := INF
+	var maxz := -INF
+	for mi in _patch_meshes(inst):
+		if mi.mesh == null:
+			continue
+		var wt: Transform3D = inst.transform * _patch_xform(mi, inst)
+		var a: AABB = wt * mi.mesh.get_aabb()
+		minx = minf(minx, a.position.x)
+		maxx = maxf(maxx, a.position.x + a.size.x)
+		minz = minf(minz, a.position.z)
+		maxz = maxf(maxz, a.position.z + a.size.z)
+		# Solid collision for actual BUILDINGS only: both footprint dimensions must
+		# be building-sized (skips thin barriers / poles / curbs), under the
+		# whole-block mega-mesh size, and tall enough to be a building. The box is
+		# SHRUNK to the building's core (these GLBs merge blocks, so the raw AABB
+		# swallows the streets) — that keeps the streets and gaps walkable while
+		# you still bump into the buildings themselves.
+		if a.size.x > 8.0 and a.size.z > 8.0 \
+			and a.size.x < 90.0 and a.size.z < 90.0 and a.size.y > 5.0:
+			buildings.append({
+				"x": a.position.x + a.size.x * 0.5, "z": a.position.z + a.size.z * 0.5,
+				"w": a.size.x * 0.5, "d": a.size.z * 0.5, "h": a.position.y + a.size.y})
+		var _unused := collide_min
+	_patch_zones.append({
+		"x": (minx + maxx) * 0.5, "z": (minz + maxz) * 0.5,
+		"w": maxx - minx, "d": maxz - minz})
+
+
+func _patch_xform(node: Node, top: Node) -> Transform3D:
+	var t := Transform3D.IDENTITY
+	var n: Node = node
+	while n != null and n != top:
+		if n is Node3D:
+			t = (n as Node3D).transform * t
+		n = n.get_parent()
+	return t
+
+
+func _patch_meshes(n: Node, acc: Array = []) -> Array:
+	if n is MeshInstance3D:
+		acc.append(n)
+	for c in n.get_children():
+		_patch_meshes(c, acc)
+	return acc
+
+
+## True if (x,z) lies within `margin` of any imported patch footprint.
+func _in_patch_zone(x: float, z: float, margin: float) -> bool:
+	for p in _patch_zones:
+		var qx := clampf(x, p.x - p.w * 0.5, p.x + p.w * 0.5)
+		var qz := clampf(z, p.z - p.d * 0.5, p.z + p.d * 0.5)
+		if Vector2(x - qx, z - qz).length() < margin:
+			return true
+	return false
+
+
+## A dedicated hill north of the city with a big white HOLLYWOOD-style sign on
+## its south slope, facing the downtown skyline.
+func _add_hollywood_sign() -> void:
+	var hx := -36.0
+	# Far enough north that the hill's south foot clears the F1 circuit (its north
+	# edge runs at z ≈ -340); the old z=-411 reached onto the track.
+	var hz := -(WORLD_HALF + 384.0)
+	var hr := 150.0
+	var hh := 170.0
+	var hill := Build.cyl(0.0, hr, hh, 7, Build.mat(Build.hex(0x6e7349), 1.0))   # dry chaparral hill
+	hill.position = Vector3(hx, hh / 2.0 - 12.0, hz)
+	add_child(hill)
+	# Full 2r box like every other cylinder — half-size collision let the
+	# player walk ~70 m inside the hill before being blocked.
+	buildings.append({"x": hx, "z": hz, "w": hr * 2.0, "d": hr * 2.0, "h": hh})
+
+	# The sign itself — big white letters on posts, sitting on the south face.
+	var sign := Label3D.new()
+	sign.text = "HOLLYWOOD"
+	sign.font_size = 130
+	sign.pixel_size = 0.16                 # ~14 m tall caps
+	sign.modulate = Color(0.97, 0.97, 0.95)
+	sign.outline_size = 18
+	sign.outline_modulate = Color(0.25, 0.22, 0.2)
+	sign.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	sign.double_sided = true
+	sign.shaded = false
+	sign.fixed_size = false
+	sign.position = Vector3(hx, 78.0, hz + hr * 0.55)   # mid-slope, facing the city (+Z)
+	add_child(sign)
+
+
 func _add_mountains() -> void:
 	var mtn_m := Build.mat(Build.hex(0x5a6473), 1.0)
 	var snow_m := Build.mat(Build.hex(0xd8dde2), 0.9)
@@ -2123,6 +2433,9 @@ func _add_mountains() -> void:
 		# Keep the launch complex clear.
 		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < r + 50.0:
 			continue
+		# Keep the imported city patches clear.
+		if _in_patch_zone(x, z, r + 18.0):
+			continue
 		var m := Build.cyl(0.0, r, h, 7, mtn_m)
 		m.position = Vector3(x, h / 2.0 - 12.0, z)
 		add_child(m)
@@ -2131,8 +2444,10 @@ func _add_mountains() -> void:
 			cap.position = Vector3(x, h - 12.0 - h * 0.12, z)
 			add_child(cap)
 		# Mountains inside the playable wilderness are solid to walk around.
+		# w = 2r matches the cone's ground-level base (the file's convention
+		# for every cylinder) — 1.1r buried the player deep inside the rock.
 		if dist < OUTER_HALF:
-			buildings.append({"x": x, "z": z, "w": r * 1.1, "d": r * 1.1, "h": h})
+			buildings.append({"x": x, "z": z, "w": r * 2.0, "d": r * 2.0, "h": h})
 
 ## A low-density housing belt in the green ring around the city, so building
 ## density falls off downtown -> suburbs -> countryside instead of cliffing
@@ -2160,6 +2475,10 @@ func _add_suburbs() -> void:
 		if track != null and track.near(x, z, 26.0):
 			continue
 		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 70.0:
+			continue
+		# Stay out of the imported city patches — collides_at only sees their
+		# shrunk building boxes, not their streets.
+		if _in_patch_zone(x, z, 20.0):
 			continue
 		# Mountains, other houses, trees — anything already solid blocks the lot.
 		if collides_at(x, z, 14.0):
@@ -2229,6 +2548,10 @@ func _add_outer_landscape() -> void:
 		# Keep the launch complex clear.
 		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 60.0:
 			continue
+		# Stay out of the imported city patches — collides_at only sees their
+		# shrunk building boxes, so hills/rocks would spawn in their streets.
+		if _in_patch_zone(x, z, 20.0):
+			continue
 		# Don't clip into mountains, suburb houses or anything else solid.
 		if collides_at(x, z, 16.0):
 			continue
@@ -2297,8 +2620,11 @@ func _rebuild_building_grid() -> void:
 
 func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 	# Inside the trading-floor office only its own glass walls block the player;
-	# the city far below is irrelevant.
-	if trading_floor_active:
+	# the city far below is irrelevant. Gated on the QUERY's altitude, not just
+	# the global flag — the office floats over the downtown plaza, and while the
+	# player is upstairs, ground-level NPCs/cops/bullets in the same footprint
+	# must keep colliding with the real city, not invisible office glass.
+	if trading_floor_active and altitude > 30.0:
 		var tf := TRADING_FLOOR
 		if absf(x - tf.x) < 12.0 and absf(z - tf.z) < 9.0:
 			for w in _office_walls:
@@ -2335,10 +2661,20 @@ func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 	# down at ground level is blocked the whole length of the channel.
 	if absf(x - RIVER_CX) < RIVER_HALF and z > -WORLD_HALF and z < WORLD_HALF \
 		and altitude < BRIDGE_H - 1.2:
+		# …except where the F1 circuit's tarmac spans the channel: its southern
+		# straight crosses at z ≈ 154, just south of the last bridge's lift
+		# window, and used to slam racing cars into an invisible wall mid-lap.
+		if track != null and track.on_road(Vector3(x, 0.0, z)):
+			return false
 		return true
 	# The sea to the south is impassable on the ground, but planes fly over it.
 	if z > WORLD_HALF + 5.0 and altitude < 5.0:
 		return true
+	# The imported city patches sit past the normal wilderness edge, but their
+	# ground is solid and walkable — their buildings already blocked via the box
+	# grid above. The 40 m halo also bridges the gap back to the playable area.
+	if _in_patch_zone(x, z, 40.0):
+		return false
 	if absf(x) > OUTER_HALF or z < -OUTER_HALF:
 		return true                       # edge of the playable wilderness
 	return false

@@ -5,7 +5,7 @@ extends CanvasLayer
 ##
 ## Each frame the game polls `stick`, `sprint_held`, `fire_held`, and
 ## `consume_look_rel()`. Tap buttons emit `action(name)` — game.gd routes the
-## name back into the existing `_handle_key` path so the rest of the game
+## name back into the existing `_handle_action` path so the rest of the game
 ## doesn't know touch exists.
 
 signal action(name: StringName)   # "interact" (E), "suit" (F), "summon" (V)
@@ -63,7 +63,23 @@ func _ready() -> void:
 func _process(_dt: float) -> void:
 	# Hide (and stop swallowing touches) while a terminal/phone overlay is up,
 	# so the buttons in those screens get the taps instead.
-	visible = GameState.started and not GameState.paused
+	var want := GameState.started and not GameState.paused
+	if visible and not want:
+		_clear_touches()   # a finger-lift while hidden would never reach _input
+	visible = want
+
+
+## Forget every live touch — otherwise a hold that started before the HUD hid
+## (FIRE, the move stick) latches on until that control is pressed again.
+func _clear_touches() -> void:
+	_stick_touch = -1
+	_look_touch = -1
+	_fire_touch = -1
+	stick = Vector2.ZERO
+	look_rel = Vector2.ZERO
+	sprint_held = false
+	fire_held = false
+	_pad.queue_redraw()
 
 
 func _resize() -> void:
@@ -86,6 +102,9 @@ func consume_look_rel() -> Vector2:
 # ---------------- Input dispatch -------------------------------------------
 func _input(event: InputEvent) -> void:
 	if not visible:
+		# Still honour finger-lifts so no touch stays latched across a hide.
+		if event is InputEventScreenTouch and not event.pressed:
+			_release(event.index)
 		return
 	if event is InputEventScreenTouch:
 		if event.pressed:

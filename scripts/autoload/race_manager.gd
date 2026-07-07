@@ -128,7 +128,10 @@ func tick(dt: float, pos: Vector3, in_car: bool, drifting: bool) -> void:
 	# --- Live race: lap timing + finish detection ---
 	_cooldown = maxf(0.0, _cooldown - dt)
 	lap_time += dt
-	if idx > n / 2:
+	# Arm only from the middle third of the track. The starting grid sits just
+	# BEHIND the line (nearest index ≈ n-1), so arming on `idx > n / 2` would
+	# count rolling off the grid as a completed lap.
+	if idx > n / 3 and idx < 2 * n / 3:
 		_armed = true
 	if _armed and idx < n / 10 and _cooldown <= 0.0:
 		_armed = false

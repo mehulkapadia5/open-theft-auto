@@ -128,6 +128,17 @@ original `game.js` prototype.
 Issues and pull requests are welcome. The whole game is plain GDScript under
 `scripts/` — no build step, just open the folder in Godot 4.6 and press **F5**.
 
+## Credits
+
+Almost everything in the world is generated procedurally in GDScript. The one
+third-party art asset is the Formula 1 car:
+
+- **McLaren MCL35M** by [chwashere123](https://sketchfab.com/chwashere123)
+  ([Sketchfab](https://sketchfab.com/3d-models/mc-laren-mcl35m-14ae5aaa76e14c278f7d0e45e065279d)),
+  licensed under [CC-BY-4.0](http://creativecommons.org/licenses/by/4.0/).
+  Fitted to game space in `scripts/car_mesh.gd`; the model and its license live
+  in `assets/vehicles/mclaren_mcl35m/`.
+
 ## License
 
 Released under the [MIT License](LICENSE) — free to use, modify, and

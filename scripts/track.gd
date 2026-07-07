@@ -33,6 +33,8 @@ var total_length := 0.0
 var pit_spots: PackedVector3Array = PackedVector3Array() # pit-lane bay centres
 var paddock_pos := Vector3.ZERO                          # race-entry point
 var podium_pos := Vector3.ZERO                           # winner's podium
+var solids: Array = []       # collision AABBs for the track's solid buildings
+							 # — world.generate() folds them into `buildings`
 
 var _road_mat: StandardMaterial3D
 
@@ -56,6 +58,16 @@ func build() -> void:
 	_build_estate()
 
 
+## Record a solid axis-aligned collision box for a yaw-rotated structure. The
+## rotated footprint is bounded conservatively; good enough for buildings that
+## sit well off the racing line.
+func _solid(pos: Vector3, w: float, d: float, h: float, yaw := 0.0) -> void:
+	var c := absf(cos(yaw))
+	var s := absf(sin(yaw))
+	solids.append({"x": pos.x, "z": pos.z,
+		"w": w * c + d * s, "d": w * s + d * c, "h": h})
+
+
 ## Curvature at baked index `i`: 0 on a straight, climbing toward ~2 at a hairpin.
 func _corner_amount(i: int) -> float:
 	var m := baked.size()
@@ -76,7 +88,9 @@ func _bake_centerline() -> void:
 		for s in steps:
 			var t := float(s) / float(steps)
 			var pt := _catmull(p0, p1, p2, p3, t)
-			baked.append(Vector3(pt.x, 0.13, pt.y))
+			# 0.16, not 0.13: the southern straight overlaps the city's own
+			# tarmac (road_y = 0.13) — coplanar surfaces shimmer (z-fight).
+			baked.append(Vector3(pt.x, 0.16, pt.y))
 	# Tangents + right vectors from neighbouring points.
 	var m := baked.size()
 	for i in m:
@@ -146,8 +160,9 @@ func _build_runoff() -> void:
 		var j := (i + 1) % n
 		var hwa := width_at(i) / 2.0 + RUNOFF
 		var hwb := width_at(j) / 2.0 + RUNOFF
-		var ya := Vector3(baked[i].x, 0.07, baked[i].z)
-		var yb := Vector3(baked[j].x, 0.07, baked[j].z)
+		# 0.10, not 0.07: keeps the apron clear of the city footpath height.
+		var ya := Vector3(baked[i].x, 0.10, baked[i].z)
+		var yb := Vector3(baked[j].x, 0.10, baked[j].z)
 		var la := ya - rights[i] * hwa
 		var ra := ya + rights[i] * hwa
 		var lb := yb - rights[j] * hwb
@@ -301,6 +316,7 @@ func _build_pits() -> void:
 			garage.position = Vector3(gpos.x, 2.4, gpos.z)
 			garage.rotation.y = yaw
 			add_child(garage)
+			_solid(gpos, 9.0, 7.0, 4.6, yaw)
 			var door := Build.box(5.2, 3.4, 0.3, door_m)
 			door.position = (baked[i] + inward * (width_at(i) / 2.0 + 9.6)) \
 				+ Vector3(0, 1.85, 0)
@@ -324,6 +340,7 @@ func _build_grandstand(at: Vector3, face_yaw: float) -> void:
 		step.position = back
 		step.rotation.y = face_yaw
 		add_child(step)
+	_solid(at - fwd * 5.0, 22.0, 12.4, 7.4, face_yaw)
 
 
 func _build_grandstands() -> void:
@@ -359,6 +376,7 @@ func _build_paddock() -> void:
 	hall.position = Vector3(base.x, 4.6, base.z)
 	hall.rotation.y = yaw
 	add_child(hall)
+	_solid(Vector3(base.x, 0.0, base.z), 26.0, 12.0, 9.0, yaw)
 	var glassrow := Build.mat(Build.hex(0x2a4255), 0.1, 0.5)
 	glassrow.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	glassrow.albedo_color.a = 0.55
@@ -476,6 +494,7 @@ func _build_estate() -> void:
 	var g1 := Build.box(26.0, 5.4, 14.0, wall_m)
 	g1.position = Vector3(ex, 2.9, ez + 6.0)
 	add_child(g1)
+	_solid(Vector3(ex, 0.0, ez + 6.0), 26.0, 14.0, 10.6)
 	var r1 := Build.box(26.8, 0.5, 14.8, roof_m)
 	r1.position = Vector3(ex, 5.85, ez + 6.0)
 	add_child(r1)
@@ -500,6 +519,7 @@ func _build_estate() -> void:
 		var guest := Build.box(10.0, 4.0, 9.0, wall_m)
 		guest.position = Vector3(ex + gx, 2.1, ez - 12.0)
 		add_child(guest)
+		_solid(Vector3(ex + gx, 0.0, ez - 12.0), 10.0, 9.0, 4.4)
 		var groof := Build.box(10.8, 0.4, 9.8, roof_m)
 		groof.position = Vector3(ex + gx, 4.3, ez - 12.0)
 		add_child(groof)

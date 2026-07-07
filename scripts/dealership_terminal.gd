@@ -71,17 +71,15 @@ func _build_list() -> PanelContainer:
 
 	col.add_child(_rule())
 
-	var ch := HBoxContainer.new()
-	ch.add_theme_constant_override("separation", 16)
-	col.add_child(ch)
-	ch.add_child(_cell("MODEL", W_NAME, FAINT, 12, HORIZONTAL_ALIGNMENT_LEFT))
-	ch.add_child(_cell("CLASS", W_CLASS, FAINT, 12, HORIZONTAL_ALIGNMENT_LEFT))
-	ch.add_child(_cell("TOP SPEED", W_SPEED, FAINT, 12, HORIZONTAL_ALIGNMENT_RIGHT))
-	ch.add_child(_cell("PRICE", W_PRICE, FAINT, 12, HORIZONTAL_ALIGNMENT_RIGHT))
-	ch.add_child(_cell("", 168, FAINT, 12, HORIZONTAL_ALIGNMENT_CENTER))
-
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("v_separation", 14)
+	var gc := CenterContainer.new()
+	gc.add_child(grid)
+	col.add_child(gc)
 	for i in VehicleCatalog.LIST.size():
-		col.add_child(_build_row(i))
+		grid.add_child(_build_row(i))
 
 	col.add_child(_rule())
 	var foot := HBoxContainer.new()
@@ -99,33 +97,53 @@ func _build_list() -> PanelContainer:
 
 func _build_row(idx: int) -> PanelContainer:
 	var car: Dictionary = VehicleCatalog.LIST[idx]
-	var wrap := PanelContainer.new()
-	var rsb := StyleBoxFlat.new()
-	rsb.bg_color = ROW_BG
-	rsb.set_corner_radius_all(3)
-	rsb.set_content_margin_all(9)
-	rsb.content_margin_left = 14
-	rsb.content_margin_right = 14
-	wrap.add_theme_stylebox_override("panel", rsb)
+	var card := PanelContainer.new()
+	var csb := StyleBoxFlat.new()
+	csb.bg_color = ROW_BG
+	csb.set_corner_radius_all(6)
+	csb.set_border_width_all(1)
+	csb.border_color = Color(0.30, 0.30, 0.34, 0.5)
+	csb.set_content_margin_all(10)
+	card.add_theme_stylebox_override("panel", csb)
 
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 16)
-	wrap.add_child(row)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 5)
+	v.custom_minimum_size = Vector2(196, 0)
+	card.add_child(v)
 
-	row.add_child(_cell(car.name, W_NAME, TEXT, 21, HORIZONTAL_ALIGNMENT_LEFT))
-	row.add_child(_cell(car.category, W_CLASS, DIM, 16, HORIZONTAL_ALIGNMENT_LEFT))
-	row.add_child(_cell(str(int(round(car.max_speed))), W_SPEED, TEXT, 19,
-		HORIZONTAL_ALIGNMENT_RIGHT))
-	var price := _cell("$" + _commas(car.price), W_PRICE, GOLD, 20,
-		HORIZONTAL_ALIGNMENT_RIGHT)
-	row.add_child(price)
+	# Rendered thumbnail of the actual in-game car.
+	var img := TextureRect.new()
+	img.texture = load("res://assets/thumbs/car_%d.png" % idx)
+	img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	img.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	img.custom_minimum_size = Vector2(176, 110)
+	var ib := StyleBoxFlat.new()
+	ib.bg_color = Color(0.07, 0.08, 0.10, 1.0)
+	ib.set_corner_radius_all(4)
+	var iwrap := PanelContainer.new()
+	iwrap.add_theme_stylebox_override("panel", ib)
+	iwrap.add_child(img)
+	v.add_child(iwrap)
 
-	var act := _make_button("BUY", 168, MONEY)
+	v.add_child(_lbl(car.name, 20, TEXT))
+	var meta := HBoxContainer.new()
+	meta.add_theme_constant_override("separation", 8)
+	v.add_child(meta)
+	meta.add_child(_lbl(car.category, 14, DIM))
+	var sp := _lbl("▲ %d" % int(round(car.max_speed)), 14, AMBER)
+	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sp.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	meta.add_child(sp)
+
+	var price := _lbl("$" + _commas(car.price), 20, GOLD)
+	v.add_child(price)
+	var act := _make_button("BUY", 196, MONEY)
+	act.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	act.pressed.connect(_on_action.bind(idx))
-	row.add_child(act)
+	v.add_child(act)
 
 	_rows.append({"price": price, "act": act})
-	return wrap
+	return card
 
 
 # ---------------- Navigation ----------------
@@ -133,6 +151,7 @@ func open() -> void:
 	_open = true
 	_root.visible = true
 	_refresh()
+	UiNav.apply.call_deferred(_root)
 
 
 func _close() -> void:
@@ -154,6 +173,11 @@ func _on_action(idx: int) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _open:
+		return
+	if event is InputEventJoypadButton and event.pressed \
+		and event.button_index == JOY_BUTTON_B:
+		_close()
+		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE or event.keycode == KEY_E:

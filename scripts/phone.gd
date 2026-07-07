@@ -90,6 +90,7 @@ func _btn(col: VBoxContainer, text: String, id: String) -> void:
 func open() -> void:
 	_open = true
 	_root.visible = true
+	UiNav.apply.call_deferred(_root)
 
 
 func _close() -> void:
@@ -102,6 +103,11 @@ func _close() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _open:
+		return
+	if event is InputEventJoypadButton and event.pressed \
+		and event.button_index == JOY_BUTTON_B:
+		_close()
+		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE or event.keycode == KEY_P:

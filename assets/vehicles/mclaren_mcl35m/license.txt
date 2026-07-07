@@ -1,0 +1,11 @@
+Model Information:
+* title:	Mc Laren MCL35M
+* source:	https://sketchfab.com/3d-models/mc-laren-mcl35m-14ae5aaa76e14c278f7d0e45e065279d
+* author:	chwashere123 (https://sketchfab.com/chwashere123)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Mc Laren MCL35M" (https://sketchfab.com/3d-models/mc-laren-mcl35m-14ae5aaa76e14c278f7d0e45e065279d) by chwashere123 (https://sketchfab.com/chwashere123) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

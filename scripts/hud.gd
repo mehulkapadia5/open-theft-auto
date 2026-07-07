@@ -4,6 +4,7 @@ extends CanvasLayer
 ## Muted, realistic palette (GTA V style): charcoal panels, steel + gold accents.
 
 signal start_pressed
+signal new_game_pressed
 signal respawn_pressed
 
 const TEXT := Color("e8e6e0")        # off-white
@@ -41,6 +42,52 @@ var _race_time: Label
 var _race_best: Label
 var _race_drift: Label
 var _obj_timer := 0.0
+var _crosshair: Control
+var _scope: Control
+
+
+## Show/hide the sniper scope (and hide the normal crosshair while it's up).
+func set_scope(on: bool) -> void:
+	if _scope == null or _scope.visible == on:
+		return
+	_scope.visible = on
+	_crosshair.visible = not on
+	_scope.queue_redraw()
+
+
+## Sniper scope: a black surround masking everything outside a circular view,
+## with a fine cross reticle, stadia lines and mil-dots.
+class Scope extends Control:
+	func _ready() -> void:
+		resized.connect(queue_redraw)
+
+	func _draw() -> void:
+		var sz := size
+		var c := sz * 0.5
+		var r: float = minf(sz.x, sz.y) * 0.46
+		var big := sz.length()
+		var black := Color(0, 0, 0, 1)
+		# Black surround — a thick ring from the scope edge out past the corners.
+		draw_arc(c, r + (big - r) * 0.5, 0.0, TAU, 96, black, big - r, true)
+		# Soft inner vignette + crisp rim.
+		draw_arc(c, r - 9.0, 0.0, TAU, 96, Color(0, 0, 0, 0.5), 18.0, true)
+		draw_arc(c, r, 0.0, TAU, 160, black, 3.0, true)
+		draw_arc(c, r - 2.5, 0.0, TAU, 160, Color(0.2, 0.21, 0.22, 0.8), 1.5, true)
+		# Reticle.
+		var line := Color(0.04, 0.04, 0.05, 0.95)
+		var gap := 9.0
+		for s in [-1.0, 1.0]:
+			draw_line(Vector2(c.x + gap * s, c.y), Vector2(c.x + r * s, c.y), line, 1.5, true)
+			draw_line(Vector2(c.x, c.y + gap * s), Vector2(c.x, c.y + r * s), line, 1.5, true)
+			# Heavier outer stadia.
+			draw_line(Vector2(c.x + r * 0.6 * s, c.y), Vector2(c.x + r * s, c.y), line, 4.0, true)
+			draw_line(Vector2(c.x, c.y + r * 0.6 * s), Vector2(c.x, c.y + r * s), line, 4.0, true)
+			# Mil-dots.
+			for i in range(1, 5):
+				var d: float = gap + i * (r * 0.55) / 5.0
+				draw_circle(Vector2(c.x + d * s, c.y), 1.7, line)
+				draw_circle(Vector2(c.x, c.y + d * s), 1.7, line)
+		draw_circle(c, 1.8, Color(0.75, 0.1, 0.1, 0.95))
 
 
 ## A stylised top-down city minimap.
@@ -323,16 +370,34 @@ func _build_boot() -> void:
 	tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(tag)
 
-	var btn := _accent_button("PRESS START")
-	btn.pressed.connect(func(): start_pressed.emit())
-	var btn_wrap := CenterContainer.new()
-	btn_wrap.add_child(btn)
-	vb.add_child(btn_wrap)
+	# Continue an existing save, or start fresh. With no save there's just one
+	# button (a fresh start).
+	if SaveGame.has_save():
+		var cont := _accent_button("CONTINUE")
+		cont.pressed.connect(func(): start_pressed.emit())
+		var cw := CenterContainer.new()
+		cw.add_child(cont)
+		vb.add_child(cw)
+		var ng := _accent_button("NEW GAME")
+		ng.pressed.connect(func(): new_game_pressed.emit())
+		var nw := CenterContainer.new()
+		nw.add_child(ng)
+		vb.add_child(nw)
+	else:
+		var btn := _accent_button("PRESS START")
+		btn.pressed.connect(func(): start_pressed.emit())
+		var btn_wrap := CenterContainer.new()
+		btn_wrap.add_child(btn)
+		vb.add_child(btn_wrap)
+	# Give the boot buttons gamepad/keyboard focus — without it a controller
+	# player with a save could never pick NEW GAME (mouse-only button).
+	UiNav.apply.call_deferred(vb)
 
 	var controls := _label(
 		"WASD move / drive    Mouse look    L-Click shoot    F enter/exit vehicle\n"
 		+ "Q / Tab / Z weapons    1-9 pick    scroll cycle    SHIFT sprint / boost\n"
-		+ "SPACE handbrake    E downtown kiosks    G enter Grand Prix (in an F1 car)    M mute    R respawn / heal    ESC release mouse",
+		+ "SPACE handbrake    E downtown kiosks    G enter Grand Prix (in an F1 car)    M mute    R respawn / heal\n"
+		+ "ESC pause menu — resume, rebind controls, or exit",
 		15, Color(0.55, 0.57, 0.6))
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(controls)
@@ -344,7 +409,11 @@ func _build_hud() -> void:
 	_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_hud)
 
-	# Crosshair
+	# Crosshair — hidden while the sniper scope is up.
+	_crosshair = Control.new()
+	_crosshair.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.add_child(_crosshair)
 	for is_vert in [true, false]:
 		var c := ColorRect.new()
 		c.color = TEXT
@@ -358,7 +427,15 @@ func _build_hud() -> void:
 		c.anchor_right = 0.5
 		c.anchor_top = 0.5
 		c.anchor_bottom = 0.5
-		_hud.add_child(c)
+		_crosshair.add_child(c)
+
+	# Sniper scope overlay — a black surround with a circular view and a fine
+	# reticle. Hidden until the player aims the sniper.
+	_scope = Scope.new()
+	_scope.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_scope.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_scope.visible = false
+	_hud.add_child(_scope)
 
 	# Top bar — money, wanted, waypoint, clock.
 	var top := HBoxContainer.new()

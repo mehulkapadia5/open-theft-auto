@@ -137,6 +137,7 @@ func open() -> void:
 	_root.visible = true
 	_bet_input.text = str(mini(100_000, GameState.money))
 	_pick_laps(0)
+	UiNav.apply.call_deferred(_root)
 
 
 func _close() -> void:
@@ -163,7 +164,11 @@ func _quick_bet(amt: int) -> void:
 
 
 func _bet_value() -> int:
-	return maxi(0, int(_bet_input.text.to_int()))
+	# Strip separators first — to_int() stops at the first non-digit, so a
+	# typed "500,000" would silently become a $500 bet.
+	var t := _bet_input.text.replace(",", "").replace(" ", "") \
+		.replace("_", "").replace("$", "")
+	return maxi(0, int(t.to_int()))
 
 
 func _refresh() -> void:
@@ -189,6 +194,11 @@ func _on_start() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _open:
+		return
+	if event is InputEventJoypadButton and event.pressed \
+		and event.button_index == JOY_BUTTON_B:
+		_close()
+		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:

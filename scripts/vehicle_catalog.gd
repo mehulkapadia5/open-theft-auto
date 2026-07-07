@@ -20,7 +20,7 @@ const LIST: Array = [
 	{"name": "Banshee",     "category": "Sports",  "style": "sports", "price": 1_400_000, "max_speed": 54.0,  "color": 0xdcdcda},
 	{"name": "Adder",       "category": "Hyper",   "style": "hyper",  "price": 2_600_000, "max_speed": 66.0,  "color": 0x14202e},
 	{"name": "Vacca Veloce","category": "Hyper",   "style": "hyper",  "price": 4_500_000, "max_speed": 78.0,  "color": 0xb8902a},
-	{"name": "Formula 1",   "category": "Formula 1","style": "f1",    "price": 8_000_000, "max_speed": 111.0, "color": 0xc0392b},
+	{"name": "Formula 1",   "category": "Formula 1","style": "f1",    "price": 8_000_000, "max_speed": 111.0, "color": 0xf58020},
 	{"name": "Vortex Bike", "category": "Motorcycle","style": "bike", "price": 140_000,   "max_speed": 58.0,  "color": 0x2a6fb0},
 	{"name": "Rhino Tank",  "category": "Military", "style": "tank",  "price": 6_000_000, "max_speed": 13.0,  "color": 0x4a5238},
 ]
