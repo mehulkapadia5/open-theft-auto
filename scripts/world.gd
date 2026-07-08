@@ -2824,7 +2824,11 @@ func _add_mountains() -> void:
 		if track != null and track.near(x, z, r + 26.0):
 			continue
 		# Keep the space facility clear (bigger now — fence, hangar, tower).
-		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < r + 90.0:
+		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < r + 110.0:
+			continue
+		# Keep the facility's approach corridor clear too, so the drive/walk up
+		# from the wilderness edge to the gate is never straddled by a rock.
+		if absf(x - LAUNCH.x) < r + 50.0 and z < -(OUTER_HALF - 40.0) and z > LAUNCH.z - r:
 			continue
 		# Keep the imported city patches clear.
 		if _in_patch_zone(x, z, r + 18.0):
@@ -2836,11 +2840,13 @@ func _add_mountains() -> void:
 			var cap := Build.cyl(0.0, r * 0.3, h * 0.24, 7, snow_m)
 			cap.position = Vector3(x, h - 12.0 - h * 0.12, z)
 			add_child(cap)
-		# Mountains inside the playable wilderness are solid to walk around.
-		# w = 2r matches the cone's ground-level base (the file's convention
-		# for every cylinder) — 1.1r buried the player deep inside the rock.
-		if dist < OUTER_HALF:
-			buildings.append({"x": x, "z": z, "w": r * 2.0, "d": r * 2.0, "h": h})
+		# Mountains are solid to walk around — registered as ROUND colliders so
+		# the blocked disc matches the cone's visible base exactly (a square
+		# AABB stuck invisible corners out ~0.4r past the rock face). Now that
+		# the whole landmass is roamable, every mountain gets one, not just
+		# those inside the old wilderness ring.
+		buildings.append({"x": x, "z": z, "w": r * 2.0, "d": r * 2.0, "h": h,
+			"round": true})
 
 ## A low-density housing belt in the green ring around the city, so building
 ## density falls off downtown -> suburbs -> countryside instead of cliffing
@@ -3032,6 +3038,13 @@ func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 			var cell: Array = _bgrid.get(Vector2i(cx, cz), [])
 			for b in cell:
 				if altitude > b.h + 2.0:
+					continue
+				# Round footprints (mountain cones) block by distance, so the
+				# blocked area matches the visible rock — a square AABB on a
+				# big cone sticks invisible corners out ~0.4r past the slope.
+				if b.get("round", false):
+					if Vector2(x - b.x, z - b.z).length() < b.w / 2.0 + r:
+						return true
 					continue
 				if x > b.x - b.w / 2.0 - r and x < b.x + b.w / 2.0 + r \
 					and z > b.z - b.d / 2.0 - r and z < b.z + b.d / 2.0 + r:
