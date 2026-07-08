@@ -3068,13 +3068,17 @@ func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 	# grid above. The 40 m halo also bridges the gap back to the playable area.
 	if _in_patch_zone(x, z, 40.0):
 		return false
-	# The hidden space facility and its approach sit beyond the wilderness
-	# edge below — whitelist them the same way, or the compound (and the walk
-	# up to its gate) is entirely blocked. See _in_facility_zone.
+	# The hidden space facility and its approach sit beyond the old wilderness
+	# edge — explicitly walkable regardless of the coastline rule below. See
+	# _in_facility_zone.
 	if _in_facility_zone(x, z):
 		return false
-	if absf(x) > OUTER_HALF or z < -OUTER_HALF:
-		return true                       # edge of the playable wilderness
+	# World edge = the actual COASTLINE, not the inner wilderness ring — the
+	# whole visible landmass is roamable, so there is never an invisible wall
+	# on ground you can see. Gated on altitude so fliers (suit, aircraft,
+	# spacecraft) are never sky-walled: only ground movement stops at the sea.
+	if (absf(x) > LAND_HALF - 12.0 or z < -(LAND_HALF - 12.0)) and altitude < 6.0:
+		return true                       # off the landmass, into open sea
 	return false
 
 func find_safe_spawn() -> Vector2:
