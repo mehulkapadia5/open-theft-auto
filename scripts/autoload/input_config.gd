@@ -46,7 +46,7 @@ const ACTIONS := [
 	{"name": "move_right", "label": "Move Right", "group": "On Foot",
 		"key": KEY_D, "mouse": 0, "pad": -1},
 	{"name": "sprint_boost", "label": "Sprint / Boost", "group": "On Foot",
-		"key": KEY_SHIFT, "mouse": 0, "pad": -1},
+		"key": KEY_SHIFT, "mouse": 0, "pad": JOY_BUTTON_PADDLE1},
 	{"name": "aim", "label": "Aim / Zoom", "group": "On Foot",
 		"key": KEY_SPACE, "mouse": 0, "pad": -1},
 	{"name": "fire", "label": "Fire", "group": "On Foot",
@@ -57,6 +57,8 @@ const ACTIONS := [
 		"key": KEY_Q, "mouse": 0, "pad": JOY_BUTTON_RIGHT_SHOULDER},
 	{"name": "weapon_prev", "label": "Previous Weapon", "group": "On Foot",
 		"key": KEY_Z, "mouse": 0, "pad": JOY_BUTTON_LEFT_SHOULDER},
+	{"name": "melee", "label": "Melee Strike", "group": "On Foot",
+		"key": KEY_C, "mouse": 0, "pad": JOY_BUTTON_PADDLE2},
 
 	{"name": "handbrake", "label": "Handbrake", "group": "Driving",
 		"key": KEY_SPACE, "mouse": 0, "pad": JOY_BUTTON_X},
@@ -76,12 +78,28 @@ const LEGACY_KB_FALLBACK := {
 
 ## "interact" and "handbrake" share the Square/X button by design (mirrors the
 ## original hardcoded scheme — you're never both mid-kiosk and mid-drive) so
-## the controller diagram shows one clickable callout for both; rebinding one
-## keeps the other in sync.
+## the controls screen shows one shared controller binding for both; rebinding
+## one keeps the other in sync.
 const PAD_YOKED := {
 	"interact": "handbrake",
 	"handbrake": "interact",
 }
+
+## Analog / hardcoded controller inputs that have no ACTIONS entry at all
+## (read straight off the stick/trigger in game.gd, or off a fixed physical
+## button as a non-rebindable fallback) — shown as a read-only "complete
+## scheme" legend on the controls screen and the reference diagram, so the
+## player can see everything the pad does even though only buttons above are
+## actually rebindable.
+const FIXED_CONTROLS := [
+	{"label": "Move / Steer", "glyph": "L STICK"},
+	{"label": "Camera Look", "glyph": "R STICK"},
+	{"label": "Accelerate", "glyph": "R2"},
+	{"label": "Brake / Reverse", "glyph": "L2"},
+	{"label": "Sprint / Boost — fallback (paddle L is primary)", "glyph": "✕ CROSS"},
+	{"label": "Melee Strike — fallback (paddle R is primary)", "glyph": "R3 CLICK"},
+	{"label": "Weapon Prev / Next (redundant)", "glyph": "D-PAD ← / →"},
+]
 
 var _by_name := {}
 var _last_device := "kb"   # "kb" or "pad" — most recent input type seen
@@ -96,6 +114,35 @@ func _ready() -> void:
 		InputMap.action_erase_events(id)
 		_add_default_events(id, a)
 	load_bindings()
+	_ensure_ui_pad_bindings()
+
+
+## Godot's built-in "ui_accept" ships with NO joypad button by default in this
+## project (verified directly against InputMap — only Enter/Kp Enter/Space are
+## bound). Every menu in the game (terminals, the phone, the pause menu, the
+## boot screen) is a plain Control tree that relies on a focused Button
+## reacting to ui_accept to be "pressed" — without this, a controller could
+## move focus around perfectly well (ui_up/down/left/right DO ship with D-pad
+## + left-stick defaults) but could never actually confirm anything, which is
+## exactly the "can't buy a car / start the game with a pad" bug. Add the
+## natural bottom face button once at boot so every existing and future
+## Button-based screen gets pad confirm for free, with zero per-screen
+## special-casing. (ui_cancel is deliberately left alone — every screen
+## already closes itself on Circle/B via its own _unhandled_input, so there's
+## nothing to fix there and no reason to risk a second consumer of the event.)
+func _ensure_ui_pad_bindings() -> void:
+	_add_pad_event_if_missing(&"ui_accept", JOY_BUTTON_A)
+
+
+func _add_pad_event_if_missing(action: StringName, button: int) -> void:
+	if not InputMap.has_action(action):
+		return
+	for ev in InputMap.action_get_events(action):
+		if ev is InputEventJoypadButton and ev.button_index == button:
+			return
+	var e := InputEventJoypadButton.new()
+	e.button_index = button
+	InputMap.action_add_event(action, e)
 
 
 func action_id(name: String) -> StringName:
@@ -112,6 +159,19 @@ func actions_in_group(group: String) -> Array:
 		if a.group == group:
 			out.append(a)
 	return out
+
+
+## Reverse lookup for the read-only controller diagram: which action (if any)
+## is CURRENTLY bound to a given physical joypad button. Unlike a hardcoded
+## button->action table, this stays correct after the player rebinds an
+## action away from its default button.
+func action_bound_to_pad_button(button_index: int) -> String:
+	for a in ACTIONS:
+		var id := action_id(a.name)
+		for ev in InputMap.action_get_events(id):
+			if ev is InputEventJoypadButton and ev.button_index == button_index:
+				return a.name
+	return ""
 
 
 # =====================================================================
@@ -186,6 +246,8 @@ static func _pad_label(idx: int) -> String:
 		JOY_BUTTON_RIGHT_SHOULDER: return "R1"
 		JOY_BUTTON_LEFT_STICK: return "L3"
 		JOY_BUTTON_RIGHT_STICK: return "R3"
+		JOY_BUTTON_PADDLE1: return "PADDLE L"
+		JOY_BUTTON_PADDLE2: return "PADDLE R"
 		JOY_BUTTON_BACK: return "SHARE"
 		JOY_BUTTON_START: return "OPTIONS"
 		JOY_BUTTON_DPAD_UP: return "D-PAD ↑"

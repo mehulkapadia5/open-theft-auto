@@ -17,6 +17,60 @@ const NPC_HAIR := [0x2a1a08, 0x4a2a1a, 0xaa8866, 0x222222, 0xccaa44, 0xddccaa]
 const CONVOY_SPEED := 17.0       # how fast the motorcade rolls along its route
 const CONVOY_SPACING := 9.0      # gap between convoy vehicles along the route
 
+# ---------------- Real glTF vehicle models (plane / helicopter / rocket) ----
+# Each is a low-poly Sketchfab model (CC-BY-4.0 — see README credits) fitted
+# to game space exactly the way CarMesh fits the McLaren F1 (car_mesh.gd):
+# raw AABB probed once with a throwaway SceneTree script, then a uniform
+# scale + a recentring offset bakes the model into the vehicle's local space
+# at build time. See _make_plane / _make_helicopter / _make_rocket for how
+# these combine into a transform.
+const PLANE_SCENE: PackedScene = preload("res://assets/vehicles/plane_787/scene.gltf")
+# "Low Poly Boeing 787 Dreamliner" (Mauro3D, CC-BY — see README). Raw AABB is a
+# 60.67 x 17.29 x 69.28 (wingspan x height x length) box; the tail sits at -Z so
+# it already faces +Z. It's a JET — no propeller node, so _make_plane's prop
+# lookup returns null and the spin in _update_plane is skipped (guarded).
+# PLANE_MODEL_SCALE makes it ~19 m nose-to-tail at scale 1.0 (~34 m for the big
+# airliner spawned at scale 1.8).
+const PLANE_MODEL_SCALE := 0.27
+const PLANE_MODEL_CENTER_X := 0.0
+const PLANE_MODEL_CENTER_Z := -5.7129
+const PLANE_MODEL_MIN_Y := -0.0065
+
+const HELI_SCENE: PackedScene = preload("res://assets/vehicles/blackhawk/scene.gltf")
+# "US Army UH-60M Black Hawk low poly model" (Yi Tsung Lee / WTigerTw, CC-BY —
+# see README). Raw AABB is a 12.21 (X) x 4.85 (Y) x 17.02 (Z) box; the tail
+# rotor sits at local Z=-7.59 with the fuselage centred, so the nose already
+# points +Z — no yaw correction needed (HELI_MODEL_YAW = 0), unlike the old
+# "Low Poly Helicopter" model this replaces, whose fuselage ran along its own
+# X axis. HELI_MODEL_SCALE makes the fuselage ~12 m nose-to-tail. Raw min Y is
+# only -0.036 (skids already sit almost exactly on y = 0 at scale 1.0), which
+# is what fixes the old model's floating-above-the-helipad bug.
+const HELI_MODEL_SCALE := 0.71
+const HELI_MODEL_YAW := 0.0
+const HELI_MODEL_CENTER_X := 0.0
+const HELI_MODEL_CENTER_Z := -0.106698
+const HELI_MODEL_MIN_Y := -0.036207
+# Rotor hub centres, in the model's own local space at scale 1.0 (probed the
+# same way as the AABB above). Both rotor nodes' own transform origin sits at
+# the model centre (0,0,0) — the geometry itself is what's offset out to the
+# hub — so _make_helicopter wraps each rotor in a pivot Node3D placed at its
+# hub centre and reparents the rotor mesh under it, offset by -centre, so it
+# spins in place instead of orbiting the model origin (see
+# _wrap_rotor_pivot / _update_helicopter).
+const HELI_MAIN_ROTOR_HUB := Vector3(0.0, 3.410604, 2.295604)   # flat disc, spins about Y
+const HELI_TAIL_ROTOR_HUB := Vector3(-0.398467, 3.78741, -7.589099)  # disc faces X, spins about X
+
+const ROCKET_SCENE: PackedScene = preload("res://assets/vehicles/rocket/scene.gltf")
+# Raw AABB probed at (-66.797,-13.455,-60.805)..(55.963,192.161,49.127) — an
+# un-normalised FBX import, ~123 x 206 x 110 (x/y/z). ROCKET_MODEL_SCALE
+# makes it ~14.6 m tall, matching the old procedural body(10m)+nose(4.6m)
+# stack this replaces; the procedural booster stage below (separation,
+# tumble, its own flame) is untouched.
+const ROCKET_MODEL_SCALE := 0.071
+const ROCKET_MODEL_CENTER_X := -5.417490
+const ROCKET_MODEL_CENTER_Z := -5.838830
+const ROCKET_MODEL_MIN_Y := -13.45464
+
 # ---------------- Nodes ----------------
 var world: CityWorld
 var camera: Camera3D
@@ -29,6 +83,8 @@ var dealership_terminal: DealershipTerminal
 var suit_terminal: SuitTerminal
 var realtor_terminal: RealtorTerminal
 var race_terminal: RaceTerminal
+var donate_terminal: DonateTerminal
+var venture_terminal: VentureTerminal
 var touch_hud: TouchHUD          # on-screen joystick + buttons on mobile only
 var phone                        # the phone menu (loaded by path, see _ready)
 var phone_open := false          # true while the phone menu is on screen
@@ -38,6 +94,8 @@ var _near_exchange := false      # on foot and within reach of the exchange kios
 var _near_dealership := false    # on foot and within reach of the dealership kiosk
 var _near_stark := false         # on foot and within reach of the Stark lab kiosk
 var _near_realtor := false       # on foot and within reach of the realtor kiosk
+var _near_hospital := false      # on foot and within reach of the hospital kiosk
+var _near_ventures := false      # on foot and within reach of the Ventures HQ door
 var _near_paddock := false       # in an F1 car at the Grand Prix paddock
 var in_trading_floor := false    # inside the exchange's glass trading office
 var _trading_return := Vector3.ZERO   # street position to drop back to on exit
@@ -67,6 +125,13 @@ var aiming := false          # on foot, holding Space: first-person zoomed aim
 const CAM_FOV_HIP := 70.0
 const CAM_FOV_AIM := 32.0
 const CAM_FOV_SNIPER := 10.0     # the sniper zooms in much further than iron sights
+# Sniper-specific ADS: a deliberate, animated zoom rather than the other guns'
+# quick snap — 0 is hip-fire, 1 is fully scoped in. Advances toward 1 while
+# aiming with the sniper equipped, retreats toward 0 the instant either stops
+# being true (weapon switched away, or L2 released). Drives both the camera
+# FOV ramp and the scope overlay's fade — see _update_camera().
+var sniper_zoom_progress := 0.0
+const SNIPER_ZOOM_TIME := 0.35   # seconds for a full hip<->scoped ramp
 
 # ---------------- Entity pools ----------------
 var vehicles: Array = []
@@ -105,6 +170,7 @@ const MISSILE_RANGE := 165.0
 var walk_phase := 0.0
 var _now := 0.0
 var last_fire_at := -10.0
+var last_melee_at := -10.0
 var cop_timer := 0.0
 var wanted_decay := 0.0
 var vip_spawn_timer := 0.0       # countdown to topping the streets back up with VIPs
@@ -165,7 +231,7 @@ func _ready() -> void:
 	add_child(world)
 	world.generate()
 
-	player_node = Human.build(0xf4c28a, 0x2e2f33, 0x33384a, 0x2a1a08)
+	player_node = Human.build_model("peter")   # clothed "smart guy" player model
 	add_child(player_node)
 	var limbs: Dictionary = player_node.get_meta("limbs")
 	weapon_holder = Node3D.new()
@@ -219,6 +285,15 @@ func _ready() -> void:
 	race_terminal.start_requested.connect(_start_race)
 	RaceManager.race_finished.connect(_on_race_finished)
 
+	donate_terminal = DonateTerminal.new()
+	add_child(donate_terminal)
+	donate_terminal.closed.connect(_on_terminal_closed)
+
+	venture_terminal = VentureTerminal.new()
+	add_child(venture_terminal)
+	venture_terminal.closed.connect(_on_terminal_closed)
+	Ventures.toast.connect(func(text: String) -> void: _show_objective(text, 4.5))
+
 	# Touch overlay for tablet builds; desktop keeps the keyboard/mouse path.
 	if OS.has_feature("mobile"):
 		touch_hud = TouchHUD.new()
@@ -270,6 +345,7 @@ func _on_start() -> void:
 	GameState.paused = false
 	GameState.reset_run()
 	StockMarket.reset()
+	Ventures.reset()
 	RaceManager.reset()
 	RaceManager.track = world.track
 	Garage.reset()
@@ -278,6 +354,8 @@ func _on_start() -> void:
 	_near_dealership = false
 	_near_stark = false
 	_near_realtor = false
+	_near_hospital = false
+	_near_ventures = false
 	_near_paddock = false
 	_race_active = false
 	_race_count_shown = -1
@@ -328,7 +406,7 @@ func _on_start() -> void:
 		_refresh_suit_model()    # pad suit was built at tier 1 before the load
 	hud.enter_game()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby, ready to fly. Downtown is the place to spend: STOCK EXCHANGE, FREE HARBOR AUTOS (cars), STARK INDUSTRIES (suit upgrades) and FREE HARBOR REALTY (safehouses).", 11.0)
+	_show_objective("Rich VIPs roam the city - rob them for cash. An IRON MAN SUIT stands nearby, ready to fly. Downtown is the place to spend: STOCK EXCHANGE, FREE HARBOR AUTOS (cars), STARK INDUSTRIES (suit upgrades), FREE HARBOR REALTY (safehouses), the HOSPITAL (donate) and ANGEL VENTURES HQ (invest).", 11.0)
 
 
 func _die() -> void:
@@ -385,6 +463,8 @@ func _respawn() -> void:
 	_near_dealership = false
 	_near_stark = false
 	_near_realtor = false
+	_near_hospital = false
+	_near_ventures = false
 	_near_paddock = false
 	if in_trading_floor:
 		in_trading_floor = false
@@ -413,7 +493,7 @@ func _respawn() -> void:
 # tracks whatever InputConfig has bound at the time.
 const DISCRETE_ACTIONS := [
 	"interact", "enter_exit", "summon_suit", "phone", "mute",
-	"restock_respawn", "race_terminal", "weapon_next", "weapon_prev",
+	"restock_respawn", "race_terminal", "weapon_next", "weapon_prev", "melee",
 ]
 
 func _input(event: InputEvent) -> void:
@@ -532,6 +612,10 @@ func _handle_action(name: String) -> void:
 				_open_stark()
 			elif _near_realtor:
 				_open_realtor()
+			elif _near_hospital:
+				_open_donate()
+			elif _near_ventures:
+				_open_ventures()
 		"race_terminal":
 			if not terminal_open and _near_paddock and not RaceManager.is_active():
 				_open_race_terminal()
@@ -547,6 +631,8 @@ func _handle_action(name: String) -> void:
 		"weapon_prev":
 			if in_car == null and suit_state != "on":
 				_switch_weapon(-1)
+		"melee":
+			_perform_melee()
 		"restock_respawn":
 			if player_hp > 0:
 				player_hp = player_max_hp
@@ -631,11 +717,16 @@ func _handbrake_held() -> bool:
 
 
 # Ground/water-vehicle throttle — R2 accelerates, L2 brakes/reverses (the
-# natural driving feel), with the left stick as an alternative. On foot the same
-# triggers are aim/fire, but that never overlaps: weapons and aim are disabled
-# while driving.
+# natural driving feel). Deliberately NOT the same as _move_z(): the left
+# stick's Y axis must never contribute here (steering is left-stick X only,
+# via _move_x) — only keyboard W/S and the touch-HUD stick keep a forward/back
+# contribution, for those input methods. On foot the same triggers are
+# aim/fire, but that never overlaps: weapons and aim are disabled while driving.
 func _drive_accel() -> float:
-	return clampf(_move_z() + Gamepad.trigger_right() - Gamepad.trigger_left(),
+	var kb_touch := (1.0 if _action_held("move_forward") else 0.0) - (1.0 if _action_held("move_back") else 0.0)
+	if touch_hud != null:
+		kb_touch += touch_hud.stick.y
+	return clampf(kb_touch + Gamepad.trigger_right() - Gamepad.trigger_left(),
 		-1.0, 1.0)
 
 
@@ -682,6 +773,20 @@ func _open_realtor() -> void:
 	GameState.paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	realtor_terminal.open()
+
+
+func _open_donate() -> void:
+	terminal_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	donate_terminal.open()
+
+
+func _open_ventures() -> void:
+	terminal_open = true
+	GameState.paused = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	venture_terminal.open()
 
 
 # ---------------- Trading-floor office ----------------
@@ -927,6 +1032,9 @@ func _process(delta: float) -> void:
 			cam_yaw -= glook.x * gspeed * dt
 			if suit_state != "on":
 				cam_pitch -= glook.y * gspeed * dt
+		# Gamepad aim-assist runs after the stick has had its say, so the player
+		# can always fight the magnet or aim off-target on purpose.
+		_aim_assist(dt)
 		cam_pitch = clamp(cam_pitch, -0.2, 1.2)
 
 	if parachuting:
@@ -1171,6 +1279,22 @@ func _update_on_foot(dt: float) -> void:
 		_show_objective("Free Harbor Realty — buy a safehouse here.", 4.0)
 	_near_realtor = near_realtor
 
+	# Walk up to the hospital kiosk to donate cash for Respect + Happiness.
+	var hd := Vector2(CityWorld.HOSPITAL.x - player_pos.x,
+		CityWorld.HOSPITAL.z - player_pos.z).length()
+	var near_hospital := hd < 3.6
+	if near_hospital and not _near_hospital:
+		_show_objective("Free Harbor General Hospital — donate here.", 4.0)
+	_near_hospital = near_hospital
+
+	# Walk up to the Angel Ventures HQ door to back a founder's pitch.
+	var vd := Vector2(CityWorld.VENTURES.x - player_pos.x,
+		CityWorld.VENTURES.z - player_pos.z).length()
+	var near_ventures := vd < 3.6
+	if near_ventures and not _near_ventures:
+		_show_objective("Angel Ventures HQ — pitch meetings inside.", 4.0)
+	_near_ventures = near_ventures
+
 	# Inside the trading-floor office: detect the monitor desk and the exit pad.
 	if in_trading_floor:
 		var td := Vector2(CityWorld.OFFICE_DESK.x - player_pos.x,
@@ -1410,6 +1534,12 @@ func _update_plane(v: Dictionary, dt: float) -> void:
 	v.node.rotation = Vector3(-v.pitch, v.yaw, v.roll)
 	player_pos = v.pos
 
+	# Spin the nose propeller — the model's blade disc lies flat in its own
+	# local XY plane (thin along Z), so it spins around its own local Z axis
+	# regardless of how the plane itself is yawed/pitched/rolled above it.
+	if v.propeller != null:
+		v.propeller.rotation.z += dt * (14.0 + absf(v.speed) * 0.6)
+
 	if v.hp <= 0.0 and not v.burning:
 		v.burning = true
 		v.burn_timer = 2.0
@@ -1478,7 +1608,12 @@ func _update_helicopter(v: Dictionary, dt: float) -> void:
 	v.node.rotation = Vector3(v.pitch, v.yaw, v.roll)
 	player_pos = v.pos
 
-	# Spin the rotors — faster while climbing or moving.
+	# Spin the rotors — faster while climbing or moving. `rotor`/`tail_rotor`
+	# are the pivot Node3Ds _make_helicopter wraps around each rotor's own
+	# hub (see _wrap_rotor_pivot), so rotating them spins the blades in
+	# place instead of orbiting the fuselage centre. The main rotor disc lies
+	# flat (thin along its own Y), so it spins about Y; the tail rotor disc
+	# faces X (thin along X), so it spins about X.
 	var spin: float = 22.0 + absf(v.speed) * 0.4
 	if v.rotor != null:
 		v.rotor.rotation.y += dt * spin
@@ -1658,7 +1793,7 @@ func _make_parachute() -> Node3D:
 ## meta "pieces" holds every plate in feet-to-head order for the suit-up reveal.
 const IRONMAN_MODEL: PackedScene = preload("res://assets/characters/ironman.glb")
 const SUIT_FACE_OFFSET := 0.0       # model already faces +Z (the game's forward)
-const SUIT_SCALE := 58.0            # the Sketchfab model is tiny; this ≈ 1.95 m tall
+const SUIT_SCALE := 40.0            # sized so the suit stands ~human height (was 58, which towered ~1.5x over NPCs)
 
 ## The worn suit — the rigged Iron Man Mark 85 model, with its feet on the
 ## ground. The fly-together assembly and idle code treat it as a single piece
@@ -2072,7 +2207,7 @@ func _fire_repulsor(st: Dictionary) -> void:
 	_spawn_bullet(from, dir, w, "player", _repulsor_mat, 170.0, 0.2)
 	_spawn_sparks(from.x + dir.x, from.y + dir.y, from.z + dir.z, 2)
 	Gamepad.pulse(0.45, 0.5, 0.12)
-	AudioFX.shoot()
+	AudioFX.repulsor()
 
 
 func _fire_missile(st: Dictionary) -> void:
@@ -2082,7 +2217,7 @@ func _fire_missile(st: Dictionary) -> void:
 		"explosive": true, "pellets": 1.0}
 	_spawn_bullet(from, dir, w, "player", _missile_mat, 82.0, 0.36)
 	Gamepad.pulse(0.55, 0.85, 0.22)
-	AudioFX.shoot()
+	AudioFX.missile()
 
 
 func _player_invuln() -> bool:
@@ -2253,6 +2388,20 @@ func _update_shooting() -> void:
 		_fire_weapon(w)
 
 
+## Dedicated melee action (right paddle by default, rebindable) — a punch
+## that works regardless of the currently equipped weapon, on the same code
+## path as the FIST/KNIFE weapons' own melee swing (see w.melee in
+## _fire_weapon). Independent of the fire button and ammo entirely.
+func _perform_melee() -> void:
+	if in_car != null or parachuting or suit_state != "none" \
+		or terminal_open or phone_open or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		return
+	if _now - last_melee_at < 0.4:
+		return
+	last_melee_at = _now
+	_fire_weapon(WeaponDB.LIST[0])   # FISTS — a straight punch, any loadout
+
+
 ## Tank cannon — L-click fires an explosive shell forward along the hull.
 func _update_tank_fire() -> void:
 	if in_car == null or in_car.get("style", "") != "tank":
@@ -2311,10 +2460,7 @@ func _fire_weapon(w: Dictionary) -> void:
 	# spin up), sharper for heavier hits and bigger for shotgun spreads.
 	Gamepad.pulse(0.55, clampf(0.5 + float(w.damage) * 0.012 + float(w.pellets) * 0.04, 0.45, 1.0), 0.16)
 	if w.sound:
-		if w.name == "SNIPER":
-			AudioFX.shoot_sniper()
-		else:
-			AudioFX.shoot()
+		AudioFX.gunshot(w.name)
 
 
 func _spawn_bullet(from: Vector3, dir: Vector3, w: Dictionary, source: String,
@@ -2471,7 +2617,8 @@ func _spawn_npc() -> void:
 		var z := (randf() - 0.5) * CityWorld.WORLD * 0.85
 		if world.collides_at(x, z, 1.0):
 			continue
-		var node := Human.build(NPC_SKINS.pick_random(), NPC_SHIRTS.pick_random(),
+		var node := Human.build_model(Human.CIVILIAN_KINDS.pick_random(),
+			NPC_SKINS.pick_random(), NPC_SHIRTS.pick_random(),
 			NPC_PANTS.pick_random(), NPC_HAIR.pick_random(), -1, randf() < 0.5)
 		node.position = Vector3(x, 0, z)
 		add_child(node)
@@ -2795,6 +2942,8 @@ func _raise_wanted(amt: float) -> void:
 		cop_timer = 5.0
 	wanted_decay = 0.0
 	GameState.wanted = min(5.0, GameState.wanted + amt * 0.15)
+	# Light touch: raising heat sours the city's mood on you, a little.
+	GameState.add_happiness(-amt * 0.08)
 
 
 # =====================================================================
@@ -2814,8 +2963,10 @@ func _find_open_spot() -> Vector2:
 func _spawn_vip_groups(n: int) -> void:
 	for i in n:
 		var spot := _find_open_spot()
-		var vnode := Human.build(0xf0caa0, 0xd8d2c0, 0x2b2b32, NPC_HAIR.pick_random())
-		vnode.scale = Vector3(1.07, 1.07, 1.07)
+		# The Indian-man-in-suit model reads as a VIP on its own — no tinting.
+		# The extra 1.07x keeps the VIP's old "slightly bigger presence" cue.
+		var vnode := Human.build_model("vip_suit")
+		vnode.scale *= 1.07
 		vnode.position = Vector3(spot.x, 0, spot.y)
 		add_child(vnode)
 		# Rich, but not absurdly so — payouts come in four fixed tiers.
@@ -2831,7 +2982,8 @@ func _spawn_vip_groups(n: int) -> void:
 			var off := Vector2(cos(ga) * 4.0, sin(ga) * 4.0)
 			var gx := spot.x + off.x
 			var gz := spot.y + off.y
-			var gnode := Human.build(0xd9a878, 0x202024, 0x18181c, 0x161616)
+			# The man-in-suit model reads as a bodyguard on its own — no tinting.
+			var gnode := Human.build_model("guard_suit")
 			gnode.position = Vector3(gx, 0, gz)
 			add_child(gnode)
 			# Give the bodyguard a visible pistol in hand.
@@ -2859,6 +3011,8 @@ func _update_vips(dt: float) -> void:
 			_spawn_blood(v.pos.x, 1.2, v.pos.z, 22)
 			_spawn_pickup(v.pos.x, v.pos.z, v.cash)
 			_raise_wanted(3.0)
+			# A dead civilian costs you more goodwill than heat alone does.
+			GameState.add_happiness(-1.5)
 			_show_objective("VIP down  +$%d" % v.cash, 3.5)
 			for g in v.guards:
 				g.aggro = true
@@ -3148,7 +3302,6 @@ func _make_rocket(x: float, z: float) -> Dictionary:
 	var dark := Build.mat(Build.hex(0x2a2d33), 0.5, 0.3)
 	var accent := Build.mat(Build.hex(0xc23a3a), 0.4)
 	var metal := Build.mat(Build.hex(0x9a9ca0), 0.3, 0.7)
-	var glass := Build.mat(Build.hex(0x141d28), 0.1, 0.4)
 
 	# Booster (lower stage) — carries its own small tail flame, shown briefly
 	# after separation while it tumbles away with a dying engine.
@@ -3177,23 +3330,18 @@ func _make_rocket(x: float, z: float) -> Dictionary:
 	booster.set_meta("flame", b_flame)
 	add_child(booster)
 
-	# Upper stage — the vehicle node. Origin at its base.
+	# Upper stage — the vehicle node. Origin at its base. The visual body is
+	# the real "Cartoon Rocket" glTF model (Samuel Metters, CC-BY-4.0 — see
+	# README credits) rather than procedural cylinders — see ROCKET_MODEL_*
+	# above for how the fit was measured.
 	var g := Node3D.new()
-	var u_body := Build.cyl(2.0, 2.4, 10.0, 16, white)
-	u_body.position = Vector3(0, 5.0, 0)
-	g.add_child(u_body)
-	var nose := Build.cyl(0.16, 2.0, 4.6, 16, white)
-	nose.position = Vector3(0, 12.3, 0)
-	g.add_child(nose)
-	var u_stripe := Build.cyl(2.44, 2.44, 1.4, 16, accent)
-	u_stripe.position = Vector3(0, 8.8, 0)
-	g.add_child(u_stripe)
-	for wi in 3:
-		var wa := wi * TAU / 3.0
-		var win := Build.box(0.2, 0.7, 0.7, glass)
-		win.position = Vector3(cos(wa) * 2.06, 9.6, sin(wa) * 2.06)
-		win.rotation.y = wa
-		g.add_child(win)
+	var model := ROCKET_SCENE.instantiate()
+	model.scale = Vector3(ROCKET_MODEL_SCALE, ROCKET_MODEL_SCALE, ROCKET_MODEL_SCALE)
+	model.position = Vector3(
+		-ROCKET_MODEL_CENTER_X * ROCKET_MODEL_SCALE,
+		-ROCKET_MODEL_MIN_Y * ROCKET_MODEL_SCALE,
+		-ROCKET_MODEL_CENTER_Z * ROCKET_MODEL_SCALE)
+	g.add_child(model)
 
 	# Layered exhaust plume — bright core, orange mid, translucent outer, all
 	# fanning down from a shared nozzle glow. _update_rocket_fx() scales and
@@ -3666,93 +3814,20 @@ func _exit_rocket(v: Dictionary) -> void:
 
 
 func _make_plane(x: float, z: float, yaw: float, scale := 1.0) -> Dictionary:
-	# A low-poly airliner — nose points +Z. Fuselage, swept wings + winglets,
-	# under-wing engines, a tail fin, stabilisers, window row and landing gear.
+	# The visual body is the real "Low Poly Boeing 787 Dreamliner" glTF model
+	# (Mauro3D, CC-BY-4.0 — see README credits), fitted to game space: nose
+	# points +Z, wheels rest on y = 0 — see PLANE_MODEL_* above. It's a jet, so
+	# find_child("Propeller_1") returns null and the prop-spin in _update_plane
+	# is skipped (guarded there).
 	var g := Node3D.new()
-	var body_m := Build.mat(Build.hex(0xeef1f4), 0.4, 0.25)
-	var accent_m := Build.mat(Build.hex(0xc23a3a), 0.4, 0.2)
-	var dark_m := Build.mat(Build.hex(0x33373d), 0.35, 0.4)
-	var metal_m := Build.mat(Build.hex(0x8e9298), 0.3, 0.7)
-	var win_m := Build.mat(Build.hex(0x9fb6c8), 0.2, 0.5)
-	var glass_m := Build.mat(Build.hex(0x141d28), 0.1, 0.4)
-	glass_m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	glass_m.albedo_color.a = 0.7
-
-	var fy := 2.3
-
-	# Fuselage — a long round tube laid along +Z.
-	var fus := Build.cyl(1.05, 1.05, 12.6, 14, body_m)
-	fus.rotation.x = PI / 2.0
-	fus.position = Vector3(0, fy, 0)
-	g.add_child(fus)
-	# Nose cone — its point faces +Z (forward).
-	var nose := Build.cyl(0.14, 1.05, 3.4, 14, body_m)
-	nose.rotation.x = PI / 2.0
-	nose.position = Vector3(0, fy, 7.9)
-	g.add_child(nose)
-	# Tail cone — tapers up to a point at the back (-Z).
-	var tcone := Build.cyl(0.16, 1.05, 4.2, 14, body_m)
-	tcone.rotation.x = -PI / 2.0
-	tcone.position = Vector3(0, fy + 0.45, -8.2)
-	g.add_child(tcone)
-	# Cockpit canopy near the nose.
-	var cockpit := Build.box(1.45, 0.7, 2.4, glass_m)
-	cockpit.position = Vector3(0, fy + 0.82, 4.7)
-	g.add_child(cockpit)
-	# A red cheatline stripe down each side, airliner-style.
-	for sx0 in [-1.0, 1.0]:
-		var stripe := Build.box(0.1, 0.42, 11.5, accent_m)
-		stripe.position = Vector3(sx0 * 1.04, fy + 0.18, -0.4)
-		g.add_child(stripe)
-	# Cabin window row.
-	for wi in 11:
-		var wz := 3.6 - wi * 0.78
-		for sx in [-1.03, 1.03]:
-			var win := Build.box(0.1, 0.3, 0.4, win_m)
-			win.position = Vector3(sx, fy + 0.5, wz)
-			g.add_child(win)
-
-	# Wings — long, flat, gently swept, mounted low on the fuselage.
-	for side in [-1.0, 1.0]:
-		var wing := Build.box(8.8, 0.4, 3.5, body_m)
-		wing.position = Vector3(side * 5.4, fy - 0.55, -0.3)
-		wing.rotation.y = side * 0.2
-		g.add_child(wing)
-		var wl := Build.box(0.34, 1.05, 1.0, body_m)
-		wl.position = Vector3(side * 9.6, fy - 0.05, -1.4)
-		wl.rotation.z = side * 0.4
-		g.add_child(wl)
-		var eng := Build.cyl(0.64, 0.7, 3.2, 12, dark_m)
-		eng.rotation.x = PI / 2.0
-		eng.position = Vector3(side * 4.4, fy - 1.3, 0.5)
-		g.add_child(eng)
-		var intake := Build.cyl(0.66, 0.66, 0.3, 12, metal_m)
-		intake.rotation.x = PI / 2.0
-		intake.position = Vector3(side * 4.4, fy - 1.3, 2.15)
-		g.add_child(intake)
-
-	# Tail — one vertical fin and two horizontal stabilisers.
-	var fin := Build.box(0.4, 3.9, 3.0, body_m)
-	fin.position = Vector3(0, fy + 2.45, -6.7)
-	g.add_child(fin)
-	var fin_acc := Build.box(0.44, 3.0, 1.1, accent_m)
-	fin_acc.position = Vector3(0, fy + 2.7, -7.7)
-	g.add_child(fin_acc)
-	for side in [-1.0, 1.0]:
-		var stab := Build.box(4.6, 0.3, 1.9, body_m)
-		stab.position = Vector3(side * 2.5, fy + 0.6, -7.4)
-		stab.rotation.y = side * 0.16
-		g.add_child(stab)
-
-	# Tricycle landing gear.
-	for gear in [Vector3(0, 0, 5.4), Vector3(-2.3, 0, -0.4), Vector3(2.3, 0, -0.4)]:
-		var strut := Build.cyl(0.13, 0.13, 1.7, 6, metal_m)
-		strut.position = Vector3(gear.x, fy - 1.85, gear.z)
-		g.add_child(strut)
-		var wheel := Build.cyl(0.42, 0.42, 0.34, 12, dark_m)
-		wheel.rotation.z = PI / 2.0
-		wheel.position = Vector3(gear.x, 0.42, gear.z)
-		g.add_child(wheel)
+	var model := PLANE_SCENE.instantiate()
+	model.scale = Vector3(PLANE_MODEL_SCALE, PLANE_MODEL_SCALE, PLANE_MODEL_SCALE)
+	model.position = Vector3(
+		-PLANE_MODEL_CENTER_X * PLANE_MODEL_SCALE,
+		-PLANE_MODEL_MIN_Y * PLANE_MODEL_SCALE,
+		-PLANE_MODEL_CENTER_Z * PLANE_MODEL_SCALE)
+	g.add_child(model)
+	var propeller: Node3D = model.find_child("Propeller_1", true, false)
 
 	g.scale = Vector3(scale, scale, scale)
 	g.position = Vector3(x, 0, z)
@@ -3764,8 +3839,8 @@ func _make_plane(x: float, z: float, yaw: float, scale := 1.0) -> Dictionary:
 		"max_speed": 62.0, "max_alt": 240.0,
 		"hp": 110.0 + 50.0 * scale, "max_hp": 110.0 + 50.0 * scale,
 		"burning": false, "burn_timer": 0.0,
-		"is_plane": true, "on_ground": true, "propeller": null,
-		"radius": 2.6 * scale, "cam_dist": clampf(13.0 * scale, 13.0, 24.0),
+		"is_plane": true, "on_ground": true, "propeller": propeller,
+		"radius": 3.4 * scale, "cam_dist": clampf(16.0 * scale, 15.0, 28.0),
 	}
 
 
@@ -4036,7 +4111,7 @@ func _begin_motorcade() -> void:
 	}
 	vips.append(president)
 	for gi in 6:
-		var gnode := Human.build(0xd9a878, 0x14141a, 0x101014, 0x101010, 0x101014)
+		var gnode := Human.build_model("guard_suit")
 		add_child(gnode)
 		var glimbs: Dictionary = gnode.get_meta("limbs")
 		var gholder := Node3D.new()
@@ -4223,7 +4298,7 @@ func _win_city() -> void:
 ## and a motorcade of escort cars that forms up around the car they drive.
 func _form_presidential_detail() -> void:
 	for gi in 4:
-		var gnode := Human.build(0xd9a878, 0x1a1a20, 0x141418, 0x121212, 0x141418)
+		var gnode := Human.build_model("guard_suit")
 		add_child(gnode)
 		var glimbs: Dictionary = gnode.get_meta("limbs")
 		var holder := Node3D.new()
@@ -4364,74 +4439,24 @@ func _update_my_detail(dt: float) -> void:
 
 
 func _make_helicopter(x: float, z: float, yaw: float) -> Dictionary:
-	# A low-poly utility helicopter — nose points +Z. Glass-bubble cockpit,
-	# tail boom + fin, landing skids, and a spinning main + tail rotor.
+	# The visual body is the real "US Army UH-60M Black Hawk low poly model"
+	# glTF model (Yi Tsung Lee / WTigerTw, CC-BY-4.0 — see README credits),
+	# fitted to game space: nose points +Z, skids rest on y = 0 — see
+	# HELI_MODEL_* above for how the fit was measured (no yaw correction
+	# needed, unlike the old antonmoek model). `rotor`/`tail_rotor` are pivot
+	# Node3Ds wrapping the model's own main/tail rotor blade nodes (see
+	# _wrap_rotor_pivot), spun each frame in _update_helicopter().
 	var g := Node3D.new()
-	var body_m := Build.mat(Build.hex(0x2b4a63), 0.45, 0.3)
-	var accent_m := Build.mat(Build.hex(0xe08a2c), 0.4, 0.2)
-	var dark_m := Build.mat(Build.hex(0x26292e), 0.5, 0.4)
-	var metal_m := Build.mat(Build.hex(0x8e9298), 0.3, 0.7)
-	var glass_m := Build.mat(Build.hex(0x141d28), 0.1, 0.4)
-	glass_m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	glass_m.albedo_color.a = 0.65
-
-	var fy := 2.4
-	var fus := Build.box(2.6, 2.6, 6.2, body_m)
-	fus.position = Vector3(0, fy, 0.2)
-	g.add_child(fus)
-	var belly := Build.sphere(1.5, body_m)
-	belly.scale = Vector3(1.0, 0.7, 1.4)
-	belly.position = Vector3(0, fy - 0.7, 0.6)
-	g.add_child(belly)
-	var cockpit := Build.sphere(1.5, glass_m)
-	cockpit.scale = Vector3(0.95, 0.95, 1.05)
-	cockpit.position = Vector3(0, fy + 0.2, 2.7)
-	g.add_child(cockpit)
-	var stripe := Build.box(2.68, 0.5, 6.24, accent_m)
-	stripe.position = Vector3(0, fy + 0.7, 0.2)
-	g.add_child(stripe)
-	var boom := Build.box(0.7, 0.7, 6.2, body_m)
-	boom.position = Vector3(0, fy + 0.5, -5.5)
-	g.add_child(boom)
-	var fin := Build.box(0.34, 2.4, 1.6, body_m)
-	fin.position = Vector3(0, fy + 1.6, -8.2)
-	g.add_child(fin)
-	var fin_acc := Build.box(0.36, 1.2, 1.0, accent_m)
-	fin_acc.position = Vector3(0, fy + 2.2, -8.4)
-	g.add_child(fin_acc)
-	for sx in [-1.35, 1.35]:
-		var skid := Build.box(0.24, 0.24, 5.0, metal_m)
-		skid.position = Vector3(sx, fy - 1.95, 0.3)
-		g.add_child(skid)
-		for cz in [-1.4, 1.8]:
-			var strut := Build.cyl(0.1, 0.1, 1.6, 6, metal_m)
-			strut.position = Vector3(sx * 0.78, fy - 1.2, cz)
-			strut.rotation.z = sx * 0.32
-			g.add_child(strut)
-	var mast := Build.cyl(0.22, 0.22, 1.0, 8, dark_m)
-	mast.position = Vector3(0, fy + 1.9, 0.2)
-	g.add_child(mast)
-
-	# Main rotor — a node that spins around Y.
-	var rotor := Node3D.new()
-	rotor.position = Vector3(0, fy + 2.4, 0.2)
-	g.add_child(rotor)
-	var hub := Build.cyl(0.4, 0.4, 0.3, 8, dark_m)
-	rotor.add_child(hub)
-	for bi in 3:
-		var blade := Build.box(0.55, 0.1, 11.5, dark_m)
-		blade.position = Vector3(0, 0.1, 0)
-		blade.rotation.y = bi * TAU / 3.0
-		rotor.add_child(blade)
-
-	# Tail rotor — a node that spins around X.
-	var tail_rotor := Node3D.new()
-	tail_rotor.position = Vector3(0.5, fy + 1.4, -8.2)
-	g.add_child(tail_rotor)
-	for bi in 2:
-		var tblade := Build.box(0.14, 2.6, 0.34, dark_m)
-		tblade.rotation.x = bi * PI / 2.0
-		tail_rotor.add_child(tblade)
+	var model := HELI_SCENE.instantiate()
+	model.scale = Vector3(HELI_MODEL_SCALE, HELI_MODEL_SCALE, HELI_MODEL_SCALE)
+	model.rotation.y = HELI_MODEL_YAW
+	model.position = Vector3(
+		-HELI_MODEL_CENTER_X * HELI_MODEL_SCALE,
+		-HELI_MODEL_MIN_Y * HELI_MODEL_SCALE,
+		-HELI_MODEL_CENTER_Z * HELI_MODEL_SCALE)
+	g.add_child(model)
+	var rotor := _wrap_rotor_pivot(model, "*main rotor*", HELI_MAIN_ROTOR_HUB)
+	var tail_rotor := _wrap_rotor_pivot(model, "*TAIL ROTOR*", HELI_TAIL_ROTOR_HUB)
 
 	g.position = Vector3(x, 0, z)
 	g.rotation.y = yaw
@@ -4444,8 +4469,49 @@ func _make_helicopter(x: float, z: float, yaw: float) -> Dictionary:
 		"burning": false, "burn_timer": 0.0,
 		"is_plane": true, "is_heli": true, "on_ground": true,
 		"propeller": null, "rotor": rotor, "tail_rotor": tail_rotor,
-		"radius": 3.4, "cam_dist": 15.0,
+		"radius": 3.6, "cam_dist": 15.0,
 	}
+
+
+func _wrap_rotor_pivot(model: Node3D, name_pattern: String, hub_center: Vector3) -> Node3D:
+	# Finds the rotor blade node under `model` matching `name_pattern` and
+	# reparents it under a new pivot Node3D placed at the rotor's own hub
+	# centre (hub_center is probed in the model's local space at scale 1.0,
+	# so it's scaled here to match). Both rotor nodes' transform origin sits
+	# at the model centre — the offset out to the hub lives only in the mesh
+	# geometry — so a bare `node.rotation += ...` would orbit the model
+	# origin instead of spinning about the hub. Composing every transform
+	# from the blade up to (but not including) `model` gives the blade's
+	# exact resting pose in model space; re-expressing that relative to the
+	# new pivot (which only translates, never rotates) keeps the blade's
+	# visual position and orientation identical to before — only the spin
+	# pivot changes.
+	var blade: Node3D = model.find_child(name_pattern, true, false)
+	if blade == null:
+		return null
+	var blade_in_model_space := Transform3D.IDENTITY
+	var cur: Node = blade
+	while cur != model and cur != null:
+		if cur is Node3D:
+			blade_in_model_space = (cur as Node3D).transform * blade_in_model_space
+		cur = cur.get_parent()
+
+	# `pivot` is added as a direct child of `model`, which already carries
+	# HELI_MODEL_SCALE on its own .scale — so hub_center (probed at scale
+	# 1.0, in model's local space) is used as-is here, unscaled, or the
+	# pivot would sit at the wrong depth and the rotor would wobble/orbit
+	# instead of spinning cleanly about its hub.
+	var pivot := Node3D.new()
+	pivot.position = hub_center
+	model.add_child(pivot)
+
+	blade.get_parent().remove_child(blade)
+	blade.owner = null   # was owned by the packed scene's root; avoid the
+	                     # "will make owner inconsistent" warning on reparent
+	pivot.add_child(blade)
+	blade.transform = blade_in_model_space
+	blade.position -= hub_center
+	return pivot
 
 
 func _spawn_vehicles(n: int) -> void:
@@ -4493,7 +4559,12 @@ func _update_daynight() -> void:
 	var elev_angle := asin(clamp(elev, -1.0, 1.0))
 	var theta := GameState.time_min / 1440.0 * TAU
 	sun.rotation = Vector3(-elev_angle, theta, 0.0)
-	sun.light_energy = max(0.05, elev * 1.1 + 0.35)
+	# Night floor raised well above the old 0.05 so the world stays navigable
+	# after dark (moonlight), and the directional tint cools from warm daylight
+	# toward pale blue moonlight as the sun drops below the horizon.
+	sun.light_energy = max(0.22, elev * 1.1 + 0.35)
+	var moonf: float = clampf(-elev * 2.2, 0.0, 1.0)
+	sun.light_color = Color(1.0, 0.94, 0.82).lerp(Color(0.60, 0.68, 0.95), moonf)
 
 	var day := Color("c2ad8e")        # warm LA smog-haze instead of cool grey-blue
 	var dusk := Color("b06a44")
@@ -4512,7 +4583,9 @@ func _update_daynight() -> void:
 	sky_mat.sky_horizon_color = Color(0.07, 0.05, 0.13).lerp(Color(0.85, 0.80, 0.69), dayk)
 	sky_mat.ground_horizon_color = sky_mat.sky_horizon_color
 	sky_mat.ground_bottom_color = sky_mat.sky_horizon_color.darkened(0.4)
-	env.ambient_light_energy = 0.15 + dayk * 0.7
+	# Night floor raised from 0.15 → 0.42 so unlit surfaces don't sink to black;
+	# daytime peak (~0.85) is unchanged.
+	env.ambient_light_energy = 0.42 + dayk * 0.43
 
 	var night_amt := clampf(1.0 - (elev + 0.05) * 2.5, 0.0, 1.0)
 	world.window_mat.emission_energy_multiplier = night_amt * 1.2
@@ -4537,7 +4610,15 @@ func _add_cam_shake(amt: float) -> void:
 
 
 func _update_camera(dt: float) -> void:
-	hud.set_scope(aiming and _is_sniper())
+	# Sniper scope: a progressive 0..1 ramp (NOT an instant snap) toward fully
+	# scoped-in, advancing while aiming with the sniper equipped and retreating
+	# the instant either condition drops (weapon switched, L2 released, put the
+	# gun away, etc). Drives both the camera FOV below and the scope overlay's
+	# fade, so the zoom feels like one deliberate animation, not two toggles.
+	var sniper_now: bool = aiming and _is_sniper()
+	sniper_zoom_progress = move_toward(sniper_zoom_progress,
+		1.0 if sniper_now else 0.0, dt / SNIPER_ZOOM_TIME)
+	hud.set_scope(sniper_zoom_progress)
 	# Frame-rate-corrected smoothing: the raw constants below are per-60fps-
 	# frame alphas; fold dt in so camera lag feels identical at 30 or 144 Hz.
 	var k := dt * 60.0
@@ -4558,8 +4639,15 @@ func _update_camera(dt: float) -> void:
 			-cos(cam_yaw) * cos(cam_pitch))
 		camera.position = camera.position.lerp(eye, 1.0 - pow(0.5, k)) + shake
 		camera.look_at(camera.position + fwd)
-		var aim_fov: float = CAM_FOV_SNIPER if _is_sniper() else CAM_FOV_AIM
-		camera.fov = lerp(camera.fov, aim_fov, 1.0 - pow(0.65, k))
+		if _is_sniper():
+			# Driven directly off the eased zoom progress (not the exponential
+			# lerp the other guns use below) so the sniper's ramp reads as one
+			# controlled ~0.35s animation from hip all the way to full scope.
+			var eased: float = sniper_zoom_progress * sniper_zoom_progress \
+				* (3.0 - 2.0 * sniper_zoom_progress)
+			camera.fov = lerp(CAM_FOV_HIP, CAM_FOV_SNIPER, eased)
+		else:
+			camera.fov = lerp(camera.fov, CAM_FOV_AIM, 1.0 - pow(0.65, k))
 		return
 	if suit_node != null and suit_state == "on":
 		suit_node.visible = true
@@ -4581,6 +4669,55 @@ func _update_camera(dt: float) -> void:
 		1.0 - pow(0.88 if is_plane else 0.85, k)) + shake
 	var look_h := 1.0 if is_plane else 1.5
 	camera.look_at(Vector3(target.x, target.y + look_h, target.z))
+
+
+## Gamepad aim-assist: while aiming down sights on foot with a firearm and a
+## controller connected, softly pull the aim onto the nearest person inside a
+## forward cone so a thumbstick can hold a target. It only nudges cam_yaw/pitch
+## toward the target (a lerp, not a hard snap), and runs AFTER stick input, so
+## the pull is a magnet the player can always push through. Keyboard+mouse play
+## (no joypad connected) is untouched.
+func _aim_assist(dt: float) -> void:
+	if Input.get_connected_joypads().is_empty():
+		return          # keyboard+mouse players get no magnetism
+	_apply_aim_assist(dt)
+
+
+## The aim-assist math, split out from the joypad gate so it stays testable
+## headlessly (where no controller is ever connected).
+func _apply_aim_assist(dt: float) -> void:
+	if not aiming or suit_state != "none" or in_car != null:
+		return
+	var eye := Vector3(player_pos.x, player_pos.y + 1.62, player_pos.z)
+	var fwd := Vector3(
+		-sin(cam_yaw) * cos(cam_pitch),
+		-sin(cam_pitch),
+		-cos(cam_yaw) * cos(cam_pitch))
+	const CONE := 0.30       # ~17° capture half-angle around the crosshair
+	const RANGE := 75.0
+	var best_ang := CONE
+	var best_dir := Vector3.ZERO
+	for grp in [npcs, cops, guards, vips]:
+		for o in grp:
+			if o.hp <= 0.0:
+				continue
+			var to: Vector3 = _torso(o.pos) - eye
+			if to.length_squared() > RANGE * RANGE:
+				continue
+			var d := to.normalized()
+			var ang := fwd.angle_to(d)
+			if ang < best_ang:
+				best_ang = ang
+				best_dir = d
+	if best_dir == Vector3.ZERO:
+		return
+	var yaw_t := atan2(-best_dir.x, -best_dir.z)
+	var pitch_t := asin(clampf(-best_dir.y, -1.0, 1.0))
+	# Stronger pull the closer the target already is to the crosshair, and none
+	# at the cone edge — so it locks what you point near without snatching aim.
+	var s: float = clampf((1.0 - best_ang / CONE) * 9.0 * dt, 0.0, 0.5)
+	cam_yaw = lerp_angle(cam_yaw, yaw_t, s)
+	cam_pitch = lerp(cam_pitch, pitch_t, s)
 
 
 func _push_hud() -> void:
@@ -4614,6 +4751,8 @@ func _push_hud() -> void:
 		"pres_z": president.pos.z if pres_out else 0.0,
 		"money": GameState.money,
 		"wanted": GameState.wanted,
+		"respect": GameState.respect,
+		"happiness": GameState.happiness,
 		"time_min": GameState.time_min,
 		"hp": player_hp, "hp_max": player_max_hp,
 		"armor": player_armor, "armor_max": player_max_armor,

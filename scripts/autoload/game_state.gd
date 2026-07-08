@@ -1,5 +1,6 @@
 extends Node
-## Persistent game state — money, wanted level, in-game time, current weapon + ammo.
+## Persistent game state — money, wanted level, in-game time, current weapon + ammo,
+## reputation (respect + happiness) and philanthropy totals.
 
 var started: bool = false
 var paused: bool = false
@@ -8,6 +9,12 @@ var wanted: float = 0.0
 var time_min: float = 12.0 * 60.0   # in-game minutes; 12:00 = noon
 var weapon_idx: int = 2             # default PISTOL
 var weapon_ammo: Dictionary = {}    # weapon name -> remaining rounds (INF = unlimited)
+
+# Reputation metrics — both 0..100. Respect starts low (you're a nobody);
+# happiness (the city's mood toward you) starts neutral.
+var respect: float = 5.0
+var happiness: float = 50.0
+var total_donated: int = 0
 
 func init_weapon_ammo() -> void:
 	weapon_ammo.clear()
@@ -19,9 +26,20 @@ func reset_run() -> void:
 	wanted = 0.0
 	time_min = 12.0 * 60.0
 	weapon_idx = 2
+	respect = 5.0
+	happiness = 50.0
+	total_donated = 0
 	init_weapon_ammo()
 
 func get_ammo(w: Dictionary) -> float:
 	if w.ammo == INF:
 		return INF
 	return weapon_ammo.get(w.name, 0)
+
+## Nudge respect, clamped to 0..100.
+func add_respect(amt: float) -> void:
+	respect = clampf(respect + amt, 0.0, 100.0)
+
+## Nudge happiness, clamped to 0..100.
+func add_happiness(amt: float) -> void:
+	happiness = clampf(happiness + amt, 0.0, 100.0)

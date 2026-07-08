@@ -21,9 +21,14 @@ var _hud: Control
 var _death: Control
 var _victory: Control
 var _victory_timer := 0.0
-var _objective: Label
+var _toasts: VBoxContainer
+const TOAST_MAX := 5
 var _money: Label
 var _stars: Stars
+var _respect_pips: Pips
+var _respect_val: Label
+var _happiness_pips: Pips
+var _happiness_val: Label
 var _waypoint: Label
 var _clock: Label
 var _hp: ProgressBar
@@ -41,18 +46,25 @@ var _race_lap: Label
 var _race_time: Label
 var _race_best: Label
 var _race_drift: Label
-var _obj_timer := 0.0
 var _crosshair: Control
 var _scope: Control
 
 
-## Show/hide the sniper scope (and hide the normal crosshair while it's up).
-func set_scope(on: bool) -> void:
-	if _scope == null or _scope.visible == on:
+## Sniper scope overlay, driven by a 0..1 zoom-progress amount (see game.gd's
+## sniper_zoom_progress) rather than a plain on/off — the black surround +
+## reticle fade in/out with `amount` via modulate alpha so the scope's arrival
+## reads as part of the same animated ramp as the camera's FOV zoom, instead
+## of snapping on the instant L2 crosses the aim threshold.
+func set_scope(amount: float) -> void:
+	if _scope == null:
 		return
-	_scope.visible = on
+	amount = clampf(amount, 0.0, 1.0)
+	var on := amount > 0.001
+	if _scope.visible != on:
+		_scope.visible = on
+		_scope.queue_redraw()
+	_scope.modulate.a = amount
 	_crosshair.visible = not on
-	_scope.queue_redraw()
 
 
 ## Sniper scope: a black surround masking everything outside a circular view,
@@ -221,6 +233,27 @@ class Stars extends Control:
 			var loop := PackedVector2Array(pts)
 			loop.append(pts[0])
 			draw_polyline(loop, EMPTY, 1.3, true)
+
+
+## A compact 5-pip meter — used for Respect and Happiness in the top bar,
+## same "how full is it" language as the wanted stars but a plainer dot shape
+## since these two live side by side in a small panel.
+class Pips extends Control:
+	var level := 0     # 0..5
+	var on_color := Color("c2a05a")
+	const OFF := Color(0.5, 0.5, 0.52, 0.55)
+
+	func set_level(n: int) -> void:
+		if n != level:
+			level = n
+			queue_redraw()
+
+	func _draw() -> void:
+		var r := 5.0
+		var gap := 13.0
+		var cy := size.y / 2.0
+		for i in 5:
+			draw_circle(Vector2(r + 1.0 + i * gap, cy), r, on_color if i < level else OFF)
 
 
 ## A semicircular car speedometer — arc gauge, sweeping needle, digital readout.
@@ -397,7 +430,9 @@ func _build_boot() -> void:
 		"WASD move / drive    Mouse look    L-Click shoot    F enter/exit vehicle\n"
 		+ "Q / Tab / Z weapons    1-9 pick    scroll cycle    SHIFT sprint / boost\n"
 		+ "SPACE handbrake    E downtown kiosks    G enter Grand Prix (in an F1 car)    M mute    R respawn / heal\n"
-		+ "ESC pause menu — resume, rebind controls, or exit",
+		+ "ESC pause menu — resume, rebind controls, or exit\n"
+		+ "GAMEPAD  L stick move/steer   R stick look   R2/L2 accel/brake   L2 aim · R2 fire   "
+		+ "paddle L sprint · paddle R melee   ✕ confirm   ○ back   Options pause",
 		15, Color(0.55, 0.57, 0.6))
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(controls)
@@ -456,6 +491,33 @@ func _build_hud() -> void:
 	_stars.custom_minimum_size = Vector2(132, 26)
 	wanted_box.add_child(_stars)
 	top.add_child(_panel(wanted_box))
+
+	# Reputation panel — Respect (how feared/famous you are) and Happiness
+	# (the city's mood toward you), each a 5-pip meter + the raw number.
+	var rep_col := VBoxContainer.new()
+	rep_col.add_theme_constant_override("separation", 2)
+	var rep_row := HBoxContainer.new()
+	rep_row.add_theme_constant_override("separation", 6)
+	rep_row.add_child(_label("REP", 11, FAINT))
+	_respect_pips = Pips.new()
+	_respect_pips.on_color = GOLD
+	_respect_pips.custom_minimum_size = Vector2(72, 14)
+	rep_row.add_child(_respect_pips)
+	_respect_val = _label("5", 13, GOLD)
+	rep_row.add_child(_respect_val)
+	rep_col.add_child(rep_row)
+	var mood_row := HBoxContainer.new()
+	mood_row.add_theme_constant_override("separation", 6)
+	mood_row.add_child(_label("MOOD", 11, FAINT))
+	_happiness_pips = Pips.new()
+	_happiness_pips.on_color = MONEY
+	_happiness_pips.custom_minimum_size = Vector2(72, 14)
+	mood_row.add_child(_happiness_pips)
+	_happiness_val = _label("50", 13, MONEY)
+	mood_row.add_child(_happiness_val)
+	rep_col.add_child(mood_row)
+	top.add_child(_panel(rep_col))
+
 	_waypoint = _label("AIRPORT", 17, ACCENT)
 	var wp_panel := _panel(_waypoint)
 	wp_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -536,21 +598,20 @@ func _build_hud() -> void:
 	_race_panel.visible = false
 	_hud.add_child(_race_panel)
 
-	# Objective ticker
-	_objective = _label("", 17, TEXT)
-	_objective.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var op := _panel(_objective)
-	var ops := _panel_style()
-	ops.border_color = GOLD
-	op.add_theme_stylebox_override("panel", ops)
-	op.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	op.anchor_left = 0.5
-	op.anchor_right = 0.5
-	op.offset_top = 64
-	op.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	op.modulate.a = 0.0
-	_hud.add_child(op)
-	_objective.set_meta("panel", op)
+	# Notification toasts — a bottom-centre stack of cards. Newest sits at the
+	# bottom (nearest the anchor); older cards rise above it and fade out. Built
+	# by show_objective()/_add_toast(); the container just lays them out.
+	_toasts = VBoxContainer.new()
+	_toasts.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_toasts.anchor_left = 0.5
+	_toasts.anchor_right = 0.5
+	_toasts.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toasts.grow_vertical = Control.GROW_DIRECTION_BEGIN   # grow upward from the bottom
+	_toasts.offset_bottom = -76                            # clear the bottom edge / grab handle
+	_toasts.alignment = BoxContainer.ALIGNMENT_END
+	_toasts.add_theme_constant_override("separation", 8)
+	_toasts.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.add_child(_toasts)
 
 func _make_bar(bar_name: String, is_hp: bool) -> VBoxContainer:
 	var box := VBoxContainer.new()
@@ -602,6 +663,11 @@ func _build_death() -> void:
 	var bw := CenterContainer.new()
 	bw.add_child(btn)
 	vb.add_child(bw)
+	# game.gd also honours a hardcoded Cross/R press on this screen even
+	# without focus (see _input()'s player_hp <= 0 branch), but giving the
+	# button real gamepad/keyboard focus keeps its visual state (and any other
+	# input path that reaches it) consistent with every other screen.
+	UiNav.apply.call_deferred(vb)
 
 ## A full-bleed "CITY OWNED" banner — non-blocking, fades out on its own.
 func _build_victory() -> void:
@@ -642,18 +708,95 @@ func show_victory() -> void:
 	_victory.modulate.a = 1.0
 	_victory_timer = 8.0
 
+## Public notification API (unchanged signature) — now renders each message as a
+## toast card in the bottom-centre stack instead of a single top ticker.
 func show_objective(text: String, secs := 3.5) -> void:
-	_objective.text = text
-	_obj_timer = secs
-	var panel: Control = _objective.get_meta("panel")
-	panel.modulate.a = 1.0
+	_add_toast(text, secs)
+
+
+# Emoji / accent categories inferred from the message so callers don't change.
+const _BAD := ["💀", "lost", "failed", "shut down", "busted", "wanted", "destroyed", "stolen", "⚠"]
+const _GOOD := ["🎉", "📈", "🤝", "💰", "+$", "payout", "raised", "exited", "acquired", "ipo", "backed", "donated", "sold", "bought", "won", "restock"]
+
+
+func _add_toast(text: String, secs: float) -> void:
+	var t := text.strip_edges()
+	if t == "":
+		return
+	# A leading emoji becomes the card icon; the rest is the message body.
+	var icon := ""
+	if t.length() > 0 and t.unicode_at(0) > 0x2190:
+		var sp := t.find(" ")
+		icon = t.substr(0, sp) if sp > 0 else t
+		t = t.substr(sp + 1) if sp > 0 else ""
+	var low := (icon + " " + t).to_lower()
+	var accent := ACCENT
+	for k in _BAD:
+		if low.find(k) != -1:
+			accent = Color("c8534a"); break
+	if accent == ACCENT:
+		for k in _GOOD:
+			if low.find(k) != -1:
+				accent = MONEY; break
+	if icon == "":
+		icon = "!" if accent == Color("c8534a") else ("＄" if accent == MONEY else "›")
+
+	var card := PanelContainer.new()
+	card.add_theme_stylebox_override("panel", _toast_style())
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.modulate.a = 0.0
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	card.add_child(row)
+	var bar := ColorRect.new()
+	bar.color = accent
+	bar.custom_minimum_size = Vector2(4, 0)
+	bar.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	row.add_child(bar)
+	var ic := _label(icon, 18, accent)
+	ic.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(ic)
+	var msg := _label(t, 15, TEXT)
+	msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	msg.custom_minimum_size = Vector2(300, 0)
+	msg.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	msg.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(msg)
+
+	card.custom_minimum_size = Vector2(0, 44)
+	_toasts.add_child(card)
+	# queue_free() is deferred (the child lingers in the count until end of
+	# frame), so remove_child() first — otherwise this loop never terminates.
+	while _toasts.get_child_count() > TOAST_MAX:
+		var old := _toasts.get_child(0)
+		_toasts.remove_child(old)
+		old.queue_free()
+
+	var tw := create_tween()
+	tw.tween_property(card, "modulate:a", 1.0, 0.22)
+	tw.tween_interval(maxf(0.5, secs))
+	tw.tween_property(card, "modulate:a", 0.0, 0.45)
+	tw.tween_callback(card.queue_free)
+
+
+func _toast_style() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.085, 0.095, 0.11, 0.95)
+	sb.border_color = PANEL_EDGE
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(9)
+	sb.content_margin_left = 8
+	sb.content_margin_right = 14
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	sb.shadow_color = Color(0, 0, 0, 0.45)
+	sb.shadow_size = 5
+	sb.shadow_offset = Vector2(0, 2)
+	return sb
+
 
 func _process(delta: float) -> void:
-	if _obj_timer > 0.0:
-		_obj_timer -= delta
-		if _obj_timer <= 0.0:
-			var panel: Control = _objective.get_meta("panel")
-			panel.modulate.a = 0.0
 	if _victory_timer > 0.0:
 		_victory_timer -= delta
 		if _victory_timer < 1.5:
@@ -664,6 +807,10 @@ func _process(delta: float) -> void:
 func update_hud(data: Dictionary) -> void:
 	_money.text = "$" + _commas(int(data.money))
 	_stars.set_level(clampi(int(round(data.wanted)), 0, 5))
+	_respect_pips.set_level(clampi(int(round(data.respect / 20.0)), 0, 5))
+	_respect_val.text = str(int(round(data.respect)))
+	_happiness_pips.set_level(clampi(int(round(data.happiness / 20.0)), 0, 5))
+	_happiness_val.text = str(int(round(data.happiness)))
 	var mins := int(data.time_min)
 	_clock.text = "%02d:%02d" % [int(mins / 60.0) % 24, mins % 60]
 	_hp.value = clampf(data.hp / data.hp_max * 100.0, 0.0, 100.0)

@@ -1,0 +1,11 @@
+Model Information:
+* title:	US Army UH-60M Black Hawk low poly model
+* source:	https://sketchfab.com/3d-models/us-army-uh-60m-black-hawk-low-poly-model-854bf0feee5b42dc92ac5329976f7942
+* author:	Yi Tsung Lee (https://sketchfab.com/WTigerTw)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "US Army UH-60M Black Hawk low poly model" (https://sketchfab.com/3d-models/us-army-uh-60m-black-hawk-low-poly-model-854bf0feee5b42dc92ac5329976f7942) by Yi Tsung Lee (https://sketchfab.com/WTigerTw) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

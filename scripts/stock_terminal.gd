@@ -369,6 +369,11 @@ func _build_order() -> PanelContainer:
 	fsb.content_margin_bottom = 6
 	_o_input.add_theme_stylebox_override("normal", fsb)
 	_o_input.add_theme_stylebox_override("focus", fsb)
+	# Click-only focus: a mouse can still click in and type, but a gamepad's
+	# d-pad/stick focus navigation (which otherwise walks every FOCUS_ALL
+	# control) skips right over it onto the quick chips and buttons below —
+	# there's no way to type into a LineEdit with a controller.
+	_o_input.focus_mode = Control.FOCUS_CLICK
 	_o_input.text_changed.connect(func(_t: String) -> void: _refresh_order())
 	col.add_child(_o_input)
 
@@ -383,6 +388,7 @@ func _build_order() -> PanelContainer:
 
 	_o_result = _lbl("", 16, DIM)
 	col.add_child(_o_result)
+	col.add_child(_lbl("Gamepad: L1 / R1 adjust the amount by a coarse step", 12, FAINT))
 
 	col.add_child(_rule())
 	_o_total = _lbl("", 22, TEXT)
@@ -512,20 +518,60 @@ func _num(t: String) -> float:
 		.replace("$", "").to_float()
 
 
+## Coarse gamepad-only amount stepper (L1 down / R1 up) — the LineEdit itself
+## is unreachable with a controller (see focus_mode above), so this is the
+## only way a pad player reaches an amount the four quick chips don't cover.
+## The step scales with the current value's own magnitude so the whole range
+## from a few dollars to tens of millions stays reachable in a handful of
+## presses.
+func _step_amount(dir: int) -> void:
+	if not _order_view.visible:
+		return
+	var s: Dictionary = StockMarket.stocks[_order_idx]
+	if _order_kind == "buy":
+		var cur := int(_num(_o_input.text))
+		_o_input.text = str(clampi(cur + dir * _dollar_step(cur), 0, GameState.money))
+	else:
+		var cur := _num(_o_input.text)
+		var step: float = maxf(s.owned * 0.05, 0.0001)
+		_o_input.text = _shares_str(clampf(cur + float(dir) * step, 0.0, s.owned))
+	_refresh_order()
+
+
+func _dollar_step(current: int) -> int:
+	if current < 1000:
+		return 100
+	if current < 10000:
+		return 1000
+	if current < 100000:
+		return 10000
+	if current < 1000000:
+		return 100000
+	return 1000000
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not _open:
 		return
-	# Circle (B) steps back one level, same as Escape.
-	if event is InputEventJoypadButton and event.pressed \
-		and event.button_index == JOY_BUTTON_B:
-		if _order_view.visible:
-			_close_order()
-		elif _mode == "detail":
-			_show_list()
-		else:
-			_close()
-		get_viewport().set_input_as_handled()
-		return
+	if event is InputEventJoypadButton and event.pressed:
+		# Circle (B) steps back one level, same as Escape.
+		if event.button_index == JOY_BUTTON_B:
+			if _order_view.visible:
+				_close_order()
+			elif _mode == "detail":
+				_show_list()
+			else:
+				_close()
+			get_viewport().set_input_as_handled()
+			return
+		elif _order_view.visible and event.button_index == JOY_BUTTON_LEFT_SHOULDER:
+			_step_amount(-1)
+			get_viewport().set_input_as_handled()
+			return
+		elif _order_view.visible and event.button_index == JOY_BUTTON_RIGHT_SHOULDER:
+			_step_amount(1)
+			get_viewport().set_input_as_handled()
+			return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			if _order_view.visible:

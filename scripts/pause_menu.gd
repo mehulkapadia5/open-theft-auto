@@ -1,7 +1,14 @@
 class_name PauseMenu
 extends CanvasLayer
-## Escape / pad-Start pause menu — resume, rebindable controls (diagrammatic
-## keyboard+mouse or controller view), or exit to desktop.
+## Escape / pad-Start pause menu — resume, rebindable controls, or exit to
+## desktop.
+##
+## The CONTROLS screen is a single scrollable list of every action in
+## InputConfig.ACTIONS, grouped by InputConfig.GROUP_ORDER, each row showing
+## a clickable keyboard/mouse chip and a clickable controller chip (click to
+## capture a new binding — see _start_capture). A DualSense-style diagram
+## (class GamepadDiagram, below) sits above the list as a READ-ONLY reference
+## map of the whole controller scheme; assignment only happens in the list.
 ##
 ## Mirrors the kiosk terminals / Phone for styling and input conventions:
 ## opened by game.gd (which owns the "when is it allowed" gate), closes itself
@@ -25,14 +32,11 @@ const CAPTURE_COLOR := Color("6fd4c6")
 var _root: Control
 var _pause_view: Control
 var _controls_view: Control
-var _kb_view: Control
-var _pad_view: GamepadDiagram
-var _tab_kb: Button
-var _tab_pad: Button
+var _list_view: Control
+var _diagram: GamepadDiagram
 
 var _open := false
 var _view := "pause"          # pause | controls
-var _device_tab := "kb"       # kb | pad
 
 var _capturing := false
 var _capture_action := ""
@@ -41,6 +45,7 @@ var _capture_btn: Button
 var _capture_tween: Tween
 
 var _kb_chips := {}           # action name -> Button
+var _pad_chips := {}          # action name -> Button
 
 
 func _ready() -> void:
@@ -62,7 +67,6 @@ func open() -> void:
 		return
 	_cancel_capture()
 	_open = true
-	_device_tab = InputConfig.preferred_device()
 	_root.visible = true
 	_show_pause_root()
 
@@ -248,6 +252,10 @@ func _build_pause_root() -> Control:
 # =====================================================================
 # Build — controls screen
 # =====================================================================
+const ACTION_COL_W := 340.0
+const BIND_COL_W := 210.0
+const ROW_SEP := 20.0
+
 func _build_controls_view() -> Control:
 	var root := Control.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -261,7 +269,7 @@ func _build_controls_view() -> Control:
 	center.add_child(panel)
 
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 12)
+	col.add_theme_constant_override("separation", 10)
 	col.custom_minimum_size = Vector2(940, 0)
 	panel.add_child(col)
 
@@ -269,35 +277,23 @@ func _build_controls_view() -> Control:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(title)
 
-	var tabs := HBoxContainer.new()
-	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
-	tabs.add_theme_constant_override("separation", 10)
-	_tab_kb = _menu_button("KEYBOARD & MOUSE", TEXT)
-	_tab_kb.custom_minimum_size = Vector2(260, 38)
-	_tab_kb.pressed.connect(func(): _set_device_tab("kb"))
-	tabs.add_child(_tab_kb)
-	_tab_pad = _menu_button("CONTROLLER", TEXT)
-	_tab_pad.custom_minimum_size = Vector2(260, 38)
-	_tab_pad.pressed.connect(func(): _set_device_tab("pad"))
-	tabs.add_child(_tab_pad)
-	col.add_child(tabs)
+	# Read-only DualSense reference diagram — labels pull live bindings, but
+	# clicking does nothing; all (re)assignment happens in the list below.
+	_diagram = GamepadDiagram.new()
+	var diagram_wrap := CenterContainer.new()
+	diagram_wrap.add_child(_diagram)
+	col.add_child(diagram_wrap)
+
 	col.add_child(_rule())
+	col.add_child(_row_header())
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(0, 430)
+	scroll.custom_minimum_size = Vector2(0, 230)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	col.add_child(scroll)
 
-	var scroll_inner := CenterContainer.new()
-	scroll.add_child(scroll_inner)
-
-	_kb_view = _build_kb_view()
-	scroll_inner.add_child(_kb_view)
-
-	_pad_view = GamepadDiagram.new()
-	_pad_view.chip_pressed.connect(_on_pad_chip_pressed)
-	_pad_view.visible = false
-	scroll_inner.add_child(_pad_view)
+	_list_view = _build_action_list()
+	scroll.add_child(_list_view)
 
 	col.add_child(_rule())
 	var bottom := HBoxContainer.new()
@@ -316,40 +312,106 @@ func _build_controls_view() -> Control:
 	return root
 
 
-func _build_kb_view() -> Control:
+func _row_header() -> Control:
+	var wrap := CenterContainer.new()
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", ROW_SEP)
+	var a := _section_label("ACTION")
+	a.custom_minimum_size = Vector2(ACTION_COL_W, 0)
+	row.add_child(a)
+	var k := _section_label("KEYBOARD / MOUSE")
+	k.custom_minimum_size = Vector2(BIND_COL_W, 0)
+	k.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	row.add_child(k)
+	var p := _section_label("CONTROLLER")
+	p.custom_minimum_size = Vector2(BIND_COL_W, 0)
+	p.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	row.add_child(p)
+	wrap.add_child(row)
+	return wrap
+
+
+## One comprehensive scrollable list of every action, grouped by
+## InputConfig.GROUP_ORDER, with a trailing read-only legend for the analog /
+## hardcoded controls that have no ACTIONS entry (see InputConfig.FIXED_CONTROLS).
+## Nothing is hidden behind a device tab — sprint and everything else the
+## player can do is a single visible row.
+func _build_action_list() -> Control:
+	var wrap := CenterContainer.new()
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 16)
-	col.custom_minimum_size = Vector2(860, 0)
+	col.add_theme_constant_override("separation", 14)
+	col.custom_minimum_size = Vector2(ACTION_COL_W + BIND_COL_W * 2 + ROW_SEP * 2, 0)
+	_kb_chips.clear()
+	_pad_chips.clear()
 	for group in InputConfig.GROUP_ORDER:
 		var actions: Array = InputConfig.actions_in_group(group)
 		if actions.is_empty():
 			continue
 		col.add_child(_section_label(group))
-		var grid := GridContainer.new()
-		grid.columns = 2
-		grid.add_theme_constant_override("h_separation", 30)
-		grid.add_theme_constant_override("v_separation", 8)
 		for a in actions:
-			var lbl := _lbl(a.label, 15, TEXT)
-			lbl.custom_minimum_size = Vector2(300, 38)
-			lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-			grid.add_child(lbl)
-			var chip := _make_chip("")
-			chip.pressed.connect(_on_kb_chip_pressed.bind(a.name, chip))
-			_kb_chips[a.name] = chip
-			grid.add_child(chip)
-		col.add_child(grid)
-	return col
+			col.add_child(_action_row(a.name, a.label))
+	col.add_child(_section_label("FIXED CONTROLS (NOT REBINDABLE)"))
+	for f in InputConfig.FIXED_CONTROLS:
+		col.add_child(_fixed_row(f.label, f.glyph))
+	wrap.add_child(col)
+	return wrap
+
+
+func _action_row(action_name: String, label: String) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", ROW_SEP)
+
+	var lbl := _lbl(label, 15, TEXT)
+	lbl.custom_minimum_size = Vector2(ACTION_COL_W, 40)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(lbl)
+
+	var kb_chip := _make_chip("")
+	kb_chip.custom_minimum_size = Vector2(BIND_COL_W, 40)
+	kb_chip.pressed.connect(_on_kb_chip_pressed.bind(action_name, kb_chip))
+	_kb_chips[action_name] = kb_chip
+	row.add_child(kb_chip)
+
+	var pad_chip := _make_chip("")
+	pad_chip.custom_minimum_size = Vector2(BIND_COL_W, 40)
+	pad_chip.pressed.connect(_on_pad_chip_pressed.bind(action_name, pad_chip))
+	_pad_chips[action_name] = pad_chip
+	row.add_child(pad_chip)
+
+	return row
+
+
+## A non-clickable row (plain labels, not buttons) for an analog / hardcoded
+## control that has no InputConfig action — nothing to capture, so it can't
+## be part of gamepad focus navigation the way a real rebind chip is.
+func _fixed_row(label: String, glyph: String) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", ROW_SEP)
+
+	var lbl := _lbl(label, 15, FAINT)
+	lbl.custom_minimum_size = Vector2(ACTION_COL_W, 32)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(lbl)
+
+	var dash := _lbl("—", 15, FAINT)
+	dash.custom_minimum_size = Vector2(BIND_COL_W, 32)
+	dash.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	row.add_child(dash)
+
+	var glyph_lbl := _lbl(glyph, 15, FAINT)
+	glyph_lbl.custom_minimum_size = Vector2(BIND_COL_W, 32)
+	glyph_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	row.add_child(glyph_lbl)
+
+	return row
 
 
 func _on_kb_chip_pressed(action: String, chip: Button) -> void:
 	_start_capture(action, "kb", chip)
 
 
-func _on_pad_chip_pressed(action: String) -> void:
-	var btn := _pad_view.get_button(action)
-	if btn != null:
-		_start_capture(action, "pad", btn)
+func _on_pad_chip_pressed(action: String, chip: Button) -> void:
+	_start_capture(action, "pad", chip)
 
 
 func _on_reset_defaults() -> void:
@@ -358,24 +420,18 @@ func _on_reset_defaults() -> void:
 	_refresh_controls()
 
 
-func _set_device_tab(tab: String) -> void:
-	if _capturing:
-		_cancel_capture()
-	_device_tab = tab
-	_refresh_controls()
-
-
 func _refresh_controls() -> void:
-	_kb_view.visible = (_device_tab == "kb")
-	_pad_view.visible = (_device_tab == "pad")
-	_tab_kb.add_theme_color_override("font_color", GOLD if _device_tab == "kb" else DIM)
-	_tab_pad.add_theme_color_override("font_color", GOLD if _device_tab == "pad" else DIM)
 	for action_name in _kb_chips:
 		if _capturing and _capture_device == "kb" and _capture_action == action_name:
 			continue
 		var chip: Button = _kb_chips[action_name]
 		chip.text = InputConfig.binding_text(action_name, "kb")
-	_pad_view.refresh(_capturing, _capture_action if _capture_device == "pad" else "")
+	for action_name in _pad_chips:
+		if _capturing and _capture_device == "pad" and _capture_action == action_name:
+			continue
+		var chip: Button = _pad_chips[action_name]
+		chip.text = InputConfig.binding_text(action_name, "pad")
+	_diagram.refresh()
 	UiNav.apply.call_deferred(_controls_view)
 
 
@@ -473,136 +529,140 @@ func _make_chip(text: String) -> Button:
 
 
 # =====================================================================
-# Controller diagram — a drawn PS-style gamepad with callout labels.
-# Non-rebindable analog inputs (sticks, triggers) show as fixed labels;
-# rebindable pad buttons double as clickable callouts.
+# Controller diagram — a read-only DualSense (PS5) reference map.
+#
+# This is no longer the assignment surface (that's the action list above);
+# it's just a labeled picture of the current controller scheme. Rebindable
+# labels use InputConfig.action_bound_to_pad_button() to reverse-look-up
+# whatever action currently owns each physical button, so the diagram stays
+# accurate even after the player rebinds things away from their defaults.
+# Purely analog/hardcoded controls (sticks, triggers, Sprint's Cross
+# fallback, the redundant D-Pad left/right weapon switch, Options opening
+# the pause menu) are drawn as fixed labels since they're never rebindable.
 # =====================================================================
 class GamepadDiagram extends Control:
-	signal chip_pressed(action: String)
-
-	const SIZE := Vector2(920, 300)
+	const SIZE := Vector2(940, 280)
 	const BODY_COLOR := Color(0.14, 0.15, 0.18)
-	const BODY_EDGE := Color(0.32, 0.35, 0.4)
+	const BODY_EDGE := Color(0.46, 0.62, 0.58, 0.85)
 	const STICK_COLOR := Color(0.20, 0.22, 0.26)
-	const STICK_EDGE := Color(0.45, 0.48, 0.54)
-	const LINE_COLOR := Color(0.42, 0.62, 0.55, 0.55)
+	const STICK_EDGE := Color(0.48, 0.51, 0.56)
+	const LINE_COLOR := Color(0.42, 0.62, 0.55, 0.45)
 	const FIXED_COLOR := Color(0.55, 0.57, 0.6)
-	const CAP_COLOR := Color("6fd4c6")
+	const LIVE_COLOR := Color("6fd4c6")
 
-	# Diagram-space points for the drawn body parts.
-	const P_LSTICK := Vector2(340, 210)
-	const P_RSTICK := Vector2(575, 210)
-	const P_DPAD := Vector2(340, 108)
-	const P_TRIANGLE := Vector2(575, 78)
-	const P_CIRCLE := Vector2(615, 112)
-	const P_SQUARE := Vector2(535, 112)
-	const P_CROSS := Vector2(575, 146)
-	const P_L1 := Vector2(300, 26)
-	const P_L2 := Vector2(300, 4)
-	const P_R1 := Vector2(610, 26)
-	const P_R2 := Vector2(610, 4)
-	const P_SHARE := Vector2(410, 70)
-	const P_START := Vector2(505, 70)
+	const CENTER_X := 470.0
+	const BODY_TOP := 30.0
 
-	# name -> {point, side, fixed, text/action}
+	# Right-half body silhouette, relative to (CENTER_X, BODY_TOP) — a narrow
+	# top-center waist sweeping down and out into a large bulbous lower grip.
+	# Mirrored (x negated) and reversed to close the left half in _draw().
+	const BODY_RIGHT_HALF := [
+		Vector2(0, 0), Vector2(92, 4), Vector2(152, 18), Vector2(178, 50),
+		Vector2(182, 86), Vector2(198, 122), Vector2(218, 154), Vector2(206, 182),
+		Vector2(162, 200), Vector2(96, 192), Vector2(38, 174), Vector2(0, 162),
+	]
+
+	# Physical-control points, in diagram space.
+	const P_L2 := Vector2(280, 4)
+	const P_L1 := Vector2(280, 22)
+	const P_R2 := Vector2(660, 4)
+	const P_R1 := Vector2(660, 22)
+	const P_DPAD := Vector2(320, 100)
+	const P_LSTICK := Vector2(398, 182)
+	const P_RSTICK := Vector2(542, 182)
+	const P_TOUCHPAD := Vector2(470, 68)
+	const P_SHARE := Vector2(378, 62)
+	const P_OPTIONS := Vector2(562, 62)
+	const P_TRIANGLE := Vector2(620, 76)
+	const P_CIRCLE := Vector2(646, 100)
+	const P_SQUARE := Vector2(596, 100)
+	const P_CROSS := Vector2(620, 124)
+	# Back paddles sit on the underside of the grips — no front-facing spot to
+	# put them, so their reference lines point at the base of each grip.
+	const P_PADDLE_L := Vector2(300, 190)
+	const P_PADDLE_R := Vector2(640, 190)
+
 	var _left_entries := []
 	var _right_entries := []
 	var _lines := []
-	var _buttons := {}    # action -> Button
+	var _live_entries := []   # entries with a "pad_button" key needing refresh()
 
 
 	func _ready() -> void:
 		custom_minimum_size = SIZE
 		_left_entries = [
-			{"fixed": true, "text": "Brake / Reverse", "glyph": "L2", "point": P_L2},
-			{"fixed": false, "action": "weapon_prev", "point": P_L1},
-			{"fixed": false, "action": "phone", "point": P_SHARE},
-			{"fixed": false, "action": "restock_respawn", "point": P_DPAD + Vector2(0, -14)},
-			{"fixed": false, "action": "race_terminal", "point": P_DPAD + Vector2(0, 14)},
-			{"fixed": true, "text": "Weapon Prev / Next", "glyph": "D-PAD ← →", "point": P_DPAD},
-			{"fixed": true, "text": "Move / Steer", "glyph": "L STICK", "point": P_LSTICK},
-			{"fixed": true, "text": "Sprint / Boost", "glyph": "✕", "point": P_LSTICK + Vector2(20, 40)},
+			{"fixed": "Brake / Reverse", "glyph": "L2", "point": P_L2},
+			{"pad_button": JOY_BUTTON_LEFT_SHOULDER, "glyph": "L1", "point": P_L1},
+			{"pad_button": JOY_BUTTON_BACK, "glyph": "SHARE", "point": P_SHARE},
+			{"pad_button": JOY_BUTTON_DPAD_UP, "glyph": "D-PAD ↑", "point": P_DPAD + Vector2(0, -18)},
+			{"pad_button": JOY_BUTTON_DPAD_DOWN, "glyph": "D-PAD ↓", "point": P_DPAD + Vector2(0, 18)},
+			{"fixed": "Weapon Prev / Next", "glyph": "D-PAD ← →", "point": P_DPAD},
+			{"fixed": "Move / Steer", "glyph": "L STICK", "point": P_LSTICK},
+			{"pad_button": JOY_BUTTON_PADDLE1, "glyph": "PADDLE L", "point": P_PADDLE_L},
 		]
 		_right_entries = [
-			{"fixed": true, "text": "Accelerate", "glyph": "R2", "point": P_R2},
-			{"fixed": false, "action": "weapon_next", "point": P_R1},
-			{"fixed": true, "text": "Pause Menu", "glyph": "OPTIONS", "point": P_START},
-			{"fixed": false, "action": "enter_exit", "point": P_TRIANGLE},
-			{"fixed": false, "action": "summon_suit", "point": P_CIRCLE},
-			{"fixed": false, "action": "interact", "point": P_SQUARE},
-			{"fixed": true, "text": "Camera Look", "glyph": "R STICK", "point": P_RSTICK},
+			{"fixed": "Accelerate", "glyph": "R2", "point": P_R2},
+			{"pad_button": JOY_BUTTON_RIGHT_SHOULDER, "glyph": "R1", "point": P_R1},
+			{"fixed": "Pause Menu", "glyph": "OPTIONS", "point": P_OPTIONS},
+			{"pad_button": JOY_BUTTON_Y, "glyph": "△", "point": P_TRIANGLE},
+			{"pad_button": JOY_BUTTON_B, "glyph": "○", "point": P_CIRCLE},
+			{"pad_button": JOY_BUTTON_X, "glyph": "□", "point": P_SQUARE},
+			{"fixed": "Sprint / Boost (fallback)", "glyph": "✕", "point": P_CROSS},
+			{"fixed": "Camera Look", "glyph": "R STICK", "point": P_RSTICK},
+			{"pad_button": JOY_BUTTON_PADDLE2, "glyph": "PADDLE R", "point": P_PADDLE_R},
 		]
 		_build_widgets()
-		queue_redraw()
+		refresh()
 
 
 	func _build_widgets() -> void:
-		var y := 12.0
+		var y := 6.0
 		for e in _left_entries:
-			_add_entry(e, Vector2(10, y))
-			y += 36.0
-		y = 12.0
+			_add_entry(e, Vector2(8, y), "left")
+			y += 30.0
+		y = 6.0
 		for e in _right_entries:
-			_add_entry(e, Vector2(690, y))
-			y += 36.0
+			_add_entry(e, Vector2(708, y), "right")
+			y += 30.0
 
 
-	func _add_entry(e: Dictionary, pos: Vector2) -> void:
-		var line_start: Vector2
-		if e.fixed:
-			var lbl := Label.new()
-			lbl.text = "%s   %s" % [e.glyph, e.text]
-			lbl.add_theme_font_size_override("font_size", 13)
+	func _add_entry(e: Dictionary, pos: Vector2, side: String) -> void:
+		var lbl := Label.new()
+		lbl.add_theme_font_size_override("font_size", 13)
+		lbl.custom_minimum_size = Vector2(224, 26)
+		lbl.position = pos
+		lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT if side == "left" else HORIZONTAL_ALIGNMENT_LEFT
+		if e.has("fixed"):
+			lbl.text = "%s   %s" % [e.glyph, e.fixed]
 			lbl.add_theme_color_override("font_color", FIXED_COLOR)
-			lbl.position = pos
-			lbl.custom_minimum_size = Vector2(220, 30)
-			lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			add_child(lbl)
-			line_start = pos + Vector2(110, 15)
 		else:
-			var btn := Button.new()
-			btn.position = pos
-			btn.custom_minimum_size = Vector2(220, 32)
-			_style_button(btn)
-			btn.pressed.connect(func(): chip_pressed.emit(e.action))
-			add_child(btn)
-			_buttons[e.action] = btn
-			line_start = pos + Vector2(110, 16)
+			lbl.add_theme_color_override("font_color", LIVE_COLOR)
+			e["_label"] = lbl
+			_live_entries.append(e)
+		add_child(lbl)
+		var line_start := (pos + Vector2(224, 13)) if side == "left" else (pos + Vector2(0, 13))
 		_lines.append({"a": line_start, "b": e.point})
 
 
-	func _style_button(b: Button) -> void:
-		b.add_theme_font_size_override("font_size", 13)
-		var normal := StyleBoxFlat.new()
-		normal.bg_color = Color(0.14, 0.15, 0.17)
-		normal.border_color = Color(0.42, 0.62, 0.55, 0.7)
-		normal.set_border_width_all(1)
-		normal.set_corner_radius_all(4)
-		var hover := normal.duplicate()
-		hover.bg_color = Color(0.21, 0.23, 0.26)
-		b.add_theme_stylebox_override("normal", normal)
-		b.add_theme_stylebox_override("hover", hover)
-		b.add_theme_stylebox_override("pressed", hover)
-		b.add_theme_stylebox_override("focus", hover)
-		b.add_theme_color_override("font_color", Color("e8e6e0"))
-		b.add_theme_color_override("font_hover_color", Color("c2a05a"))
-
-
-	func get_button(action: String) -> Button:
-		return _buttons.get(action)
-
-
-	## Re-pull binding text onto every callout; `capturing_action` (if not
-	## empty) keeps that one button's "PRESS A BUTTON..." placeholder intact.
-	func refresh(is_capturing: bool, capturing_action: String) -> void:
-		for action in _buttons:
-			if is_capturing and action == capturing_action:
-				continue
-			var btn: Button = _buttons[action]
-			# Interact and Handbrake share Square by design (never overlap in
-			# play — one's on foot at a kiosk, the other mid-drive).
-			var label := "Interact / Handbrake" if action == "interact" else InputConfig.label_for(action)
-			btn.text = "%s   %s" % [label, InputConfig.binding_text(action, "pad")]
+	## Re-pull whichever action currently owns each physical button (so a
+	## rebind away from the default shows up correctly here too), and
+	## redraw. No capture-state handling needed — this diagram never enters
+	## capture mode, that only happens on the action list's chips.
+	func refresh() -> void:
+		for e in _live_entries:
+			var action: String = InputConfig.action_bound_to_pad_button(e.pad_button)
+			var text: String
+			if action == "":
+				text = "(unassigned)"
+			elif action == "interact" or action == "handbrake":
+				# Interact and Handbrake share Square by design (never both
+				# needed at once — one's on foot at a kiosk, the other mid-drive).
+				text = "Interact / Handbrake"
+			else:
+				text = InputConfig.label_for(action)
+			var lbl: Label = e._label
+			lbl.text = "%s   %s" % [e.glyph, text]
 		queue_redraw()
 
 
@@ -610,42 +670,87 @@ class GamepadDiagram extends Control:
 		for l in _lines:
 			draw_line(l.a, l.b, LINE_COLOR, 1.5)
 
-		var body_sb := StyleBoxFlat.new()
-		body_sb.bg_color = BODY_COLOR
-		body_sb.border_color = BODY_EDGE
-		body_sb.set_border_width_all(2)
-		body_sb.set_corner_radius_all(48)
-		draw_style_box(body_sb, Rect2(250, 40, 420, 220))
+		# Body — one closed polygon (no seams) built from BODY_RIGHT_HALF,
+		# mirrored for the left side.
+		var origin := Vector2(CENTER_X, BODY_TOP)
+		var body_pts := PackedVector2Array()
+		for p in BODY_RIGHT_HALF:
+			body_pts.append(origin + p)
+		for i in range(BODY_RIGHT_HALF.size() - 2, 0, -1):
+			var p: Vector2 = BODY_RIGHT_HALF[i]
+			body_pts.append(origin + Vector2(-p.x, p.y))
+		draw_colored_polygon(body_pts, BODY_COLOR)
+		var closed := body_pts.duplicate()
+		closed.append(body_pts[0])
+		draw_polyline(closed, BODY_EDGE, 1.6, true)
 
-		var pill := StyleBoxFlat.new()
-		pill.bg_color = Color(0.18, 0.19, 0.22)
-		pill.border_color = BODY_EDGE
-		pill.set_border_width_all(2)
-		pill.set_corner_radius_all(9)
-		draw_style_box(pill, Rect2(255, P_L2.y, 90, 18))
-		draw_style_box(pill, Rect2(255, P_L1.y, 90, 18))
-		draw_style_box(pill, Rect2(575, P_R2.y, 90, 18))
-		draw_style_box(pill, Rect2(575, P_R1.y, 90, 18))
+		# Shoulder bumpers (L1/R1) and trigger shapes (L2/R2) on the top edge.
+		_pill(P_L2)
+		_pill(P_L1)
+		_pill(P_R2)
+		_pill(P_R1)
 
-		draw_circle(P_LSTICK, 28, STICK_COLOR)
-		draw_arc(P_LSTICK, 28, 0, TAU, 32, STICK_EDGE, 2.0)
-		draw_circle(P_RSTICK, 28, STICK_COLOR)
-		draw_arc(P_RSTICK, 28, 0, TAU, 32, STICK_EDGE, 2.0)
+		# Touchpad, center-top between the two button clusters.
+		var pad_sb := StyleBoxFlat.new()
+		pad_sb.bg_color = Color(0.18, 0.19, 0.22)
+		pad_sb.border_color = BODY_EDGE
+		pad_sb.set_border_width_all(1)
+		pad_sb.set_corner_radius_all(6)
+		draw_style_box(pad_sb, Rect2(P_TOUCHPAD - Vector2(76, 22), Vector2(152, 44)))
 
-		draw_rect(Rect2(P_DPAD.x - 22, P_DPAD.y - 8, 44, 16), STICK_COLOR)
-		draw_rect(Rect2(P_DPAD.x - 8, P_DPAD.y - 22, 16, 44), STICK_COLOR)
+		# Share / Options flanking the touchpad.
+		draw_circle(P_SHARE, 7, STICK_COLOR)
+		draw_arc(P_SHARE, 7, 0, TAU, 16, STICK_EDGE, 1.4)
+		draw_circle(P_OPTIONS, 7, STICK_COLOR)
+		draw_arc(P_OPTIONS, 7, 0, TAU, 16, STICK_EDGE, 1.4)
 
-		draw_circle(P_TRIANGLE, 15, STICK_COLOR)
-		draw_circle(P_CIRCLE, 15, STICK_COLOR)
-		draw_circle(P_SQUARE, 15, STICK_COLOR)
-		draw_circle(P_CROSS, 15, STICK_COLOR)
+		# D-Pad — four separate arrow keys, not one cross.
+		_dpad_key(P_DPAD + Vector2(0, -18), "↑")
+		_dpad_key(P_DPAD + Vector2(0, 18), "↓")
+		_dpad_key(P_DPAD + Vector2(-18, 0), "←")
+		_dpad_key(P_DPAD + Vector2(18, 0), "→")
+
+		# Face buttons — △ top, ○ right, □ left, ✕ bottom.
+		draw_circle(P_TRIANGLE, 14, STICK_COLOR)
+		draw_arc(P_TRIANGLE, 14, 0, TAU, 24, STICK_EDGE, 1.4)
+		draw_circle(P_CIRCLE, 14, STICK_COLOR)
+		draw_arc(P_CIRCLE, 14, 0, TAU, 24, STICK_EDGE, 1.4)
+		draw_circle(P_SQUARE, 14, STICK_COLOR)
+		draw_arc(P_SQUARE, 14, 0, TAU, 24, STICK_EDGE, 1.4)
+		draw_circle(P_CROSS, 14, STICK_COLOR)
+		draw_arc(P_CROSS, 14, 0, TAU, 24, STICK_EDGE, 1.4)
 		_glyph(P_TRIANGLE, "△", Color("8fb4e6"))
 		_glyph(P_CIRCLE, "○", Color("e68fa0"))
 		_glyph(P_SQUARE, "□", Color("e6c88f"))
 		_glyph(P_CROSS, "✕", Color("8fe6b0"))
 
-		draw_circle(P_SHARE, 6, BODY_EDGE)
-		draw_circle(P_START, 6, BODY_EDGE)
+		# Thumbsticks — low and inboard, side by side.
+		draw_circle(P_LSTICK, 26, STICK_COLOR)
+		draw_arc(P_LSTICK, 26, 0, TAU, 28, STICK_EDGE, 1.8)
+		draw_circle(P_LSTICK, 11, Color(0.25, 0.27, 0.31))
+		draw_circle(P_RSTICK, 26, STICK_COLOR)
+		draw_arc(P_RSTICK, 26, 0, TAU, 28, STICK_EDGE, 1.8)
+		draw_circle(P_RSTICK, 11, Color(0.25, 0.27, 0.31))
+
+		# Speaker dots — a small flourish low on the body between the sticks.
+		for i in range(5):
+			draw_circle(Vector2(CENTER_X - 8 + i * 4, BODY_TOP + 208), 1.2, BODY_EDGE)
+
+
+	func _pill(p: Vector2) -> void:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.18, 0.19, 0.22)
+		sb.border_color = BODY_EDGE
+		sb.set_border_width_all(1)
+		sb.set_corner_radius_all(8)
+		draw_style_box(sb, Rect2(p - Vector2(38, 8), Vector2(76, 16)))
+
+
+	func _dpad_key(p: Vector2, glyph: String) -> void:
+		draw_rect(Rect2(p - Vector2(11, 11), Vector2(22, 22)), STICK_COLOR)
+		draw_rect(Rect2(p - Vector2(11, 11), Vector2(22, 22)), STICK_EDGE, false, 1.4)
+		var font := ThemeDB.fallback_font
+		draw_string(font, p + Vector2(-6, 6), glyph, HORIZONTAL_ALIGNMENT_CENTER, -1, 15, FIXED_COLOR)
 
 
 	func _glyph(p: Vector2, s: String, color: Color) -> void:

@@ -33,6 +33,10 @@ const STARK_LAB := {"x": -32.0, "z": -6.0}
 const STARK_SUIT_PAD := {"x": -26.0, "z": -6.0}
 # Realtor kiosk (safehouse property), one block east of the exchange.
 const REALTOR := {"x": 32.0, "z": -6.0}
+# Hospital donation kiosk, one block southwest of the exchange (beside Stark).
+const HOSPITAL := {"x": -32.0, "z": 26.0}
+# Angel Ventures HQ entrance, one block southeast of the exchange (beside Realty).
+const VENTURES := {"x": 32.0, "z": 26.0}
 
 ## True inside the grass airfield rectangle (runways + overrun + taxiways).
 func on_airfield(x: float, z: float) -> bool:
@@ -663,6 +667,12 @@ func _build_city() -> void:
 				continue
 			if bx == 6 and bz == 5:
 				_build_realtor(cx, cz)                   # the safehouse realtor
+				continue
+			if bx == 4 and bz == 6:
+				_build_hospital(cx, cz)                  # the donation hospital
+				continue
+			if bx == 6 and bz == 6:
+				_build_ventures(cx, cz)                  # Angel Ventures HQ
 				continue
 			var house_idx := _safehouse_at(cx, cz)
 			if house_idx >= 0:
@@ -1366,6 +1376,193 @@ func _build_realtor(cx: float, cz: float) -> void:
 
 	_build_terminal_kiosk(REALTOR.x, REALTOR.z, "PROPERTY  ·  PRESS E",
 		teal, Color("c0eee2"))
+
+
+## Free Harbor General Hospital — a mid-rise clinic with a big lit red cross on
+## its facade, where the player donates cash to lift the city's mood (and their
+## own reputation). Kiosk out front, building solid.
+func _build_hospital(cx: float, cz: float) -> void:
+	var red := Color("e0554a")
+	var plaza_sz := BLOCK - ROAD_W
+	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0xc9c6c0), 0.9))
+	plaza.position = Vector3(cx, 0.07, cz)
+	add_child(plaza)
+	var trim := Build.emissive(Build.hex(0x3a1210), red, 1.0)
+	for edge in [-1.0, 1.0]:
+		var strip := Build.box(plaza_sz, 0.16, 0.5, trim)
+		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
+		add_child(strip)
+
+	var bw := 20.0
+	var bd := 12.0
+	var bh := 22.0
+	var bz := cz + 4.0
+	var fz := bz - bd / 2.0                                  # facade facing the plaza
+
+	var wall_m := Build.mat(Build.hex(0xe9e7e2), 0.75)
+	var building := Build.box(bw, bh, bd, wall_m)
+	building.position = Vector3(cx, bh / 2.0 + 0.14, bz)
+	add_child(building)
+	buildings.append({"x": cx, "z": bz, "w": bw, "d": bd, "h": bh})
+
+	var glass := Build.mat(Build.hex(0x8fb0c4), 0.15, 0.3)
+	for row in range(1, 6):
+		var pane := Build.box(bw - 3.0, 1.6, 0.2, glass)
+		pane.position = Vector3(cx, row * 3.4, fz - 0.11)
+		add_child(pane)
+
+	# Big lit red cross on the facade.
+	var cross_m := Build.emissive(Build.hex(0x3a1210), red, 2.6)
+	var v_bar := Build.box(1.8, 7.0, 0.4, cross_m)
+	v_bar.position = Vector3(cx, bh - 8.0, fz - 0.3)
+	add_child(v_bar)
+	var h_bar := Build.box(7.0, 1.8, 0.4, cross_m)
+	h_bar.position = Vector3(cx, bh - 8.0, fz - 0.3)
+	add_child(h_bar)
+
+	# Entrance canopy + lit brand sign.
+	var canopy := Build.box(bw * 0.6, 0.4, 3.0, Build.mat(Build.hex(0xd8d5cf), 0.7))
+	canopy.position = Vector3(cx, 3.6, fz - 1.6)
+	add_child(canopy)
+	var sign_text := Label3D.new()
+	sign_text.text = "FREE HARBOR GENERAL HOSPITAL"
+	sign_text.font_size = 60
+	sign_text.pixel_size = 0.01
+	sign_text.modulate = Color("8a1c14")
+	sign_text.outline_size = 0
+	sign_text.rotation.y = PI                                # face the plaza
+	sign_text.position = Vector3(cx, 3.9, fz - 1.65)
+	add_child(sign_text)
+
+	_build_terminal_kiosk(HOSPITAL.x, HOSPITAL.z, "DONATE  ·  PRESS E",
+		red, Color("ffd6d0"))
+
+
+## Angel Ventures HQ — a landmark tower, not a sidewalk kiosk: a walk-in glass
+## lobby with gold-framed double doors, and behind it a tall hexagonal glass
+## tower crowned with a gold band, a violet spire cap and a tall gold beacon of
+## light so it's spottable from across the city (mirrors the mafia-sim
+## reference's Boardroom tower — cylinder + gold crown + purple cap + beam).
+## The player presses E at the lobby doors to open the venture terminal.
+func _build_ventures(cx: float, cz: float) -> void:
+	var gold := Color("f5c451")
+	var violet := Color("9a7cff")
+	var plaza_sz := BLOCK - ROAD_W
+	var plaza := Build.box(plaza_sz, 0.14, plaza_sz, Build.mat(Build.hex(0x2a2632), 0.88))
+	plaza.position = Vector3(cx, 0.07, cz)
+	add_child(plaza)
+	var trim := Build.emissive(Build.hex(0x2e2410), gold, 1.1)
+	for edge in [-1.0, 1.0]:
+		var strip := Build.box(plaza_sz, 0.16, 0.5, trim)
+		strip.position = Vector3(cx, 0.15, cz + edge * plaza_sz / 2.0)
+		add_child(strip)
+
+	# --- Ground-floor lobby: the walk-in entrance ---
+	var lw := 15.0
+	var ld := 9.0
+	var lh := 7.0
+	var lz := cz + 3.0
+	var fz := lz - ld / 2.0                                  # glass front face, facing the plaza
+
+	var dark := Build.mat(Build.hex(0x1b1826), 0.4, 0.55)
+	var glass := Build.mat(Build.hex(0x241f30), 0.08, 0.3)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.albedo_color.a = 0.4
+
+	var plinth := Build.box(lw, 0.5, ld, Build.mat(Build.hex(0x18141f), 0.8))
+	plinth.position = Vector3(cx, 0.25, lz)
+	add_child(plinth)
+	buildings.append({"x": cx, "z": lz, "w": lw, "d": ld, "h": lh})
+	var back := Build.box(lw, lh, 0.4, dark)
+	back.position = Vector3(cx, lh / 2.0 + 0.5, lz + ld / 2.0)
+	add_child(back)
+	for side in [-1.0, 1.0]:
+		var sidewall := Build.box(0.3, lh - 0.4, ld - 0.5, glass)
+		sidewall.position = Vector3(cx + side * lw / 2.0, lh / 2.0 + 0.7, lz)
+		add_child(sidewall)
+	var front_glass := Build.box(lw - 3.4, lh - 0.4, 0.3, glass)
+	front_glass.position = Vector3(cx, lh / 2.0 + 0.7, fz)
+	add_child(front_glass)
+	# Gold-framed double doors, centred in the glass front.
+	var door_m := Build.emissive(Build.hex(0x2a2410), gold, 1.8)
+	for ddx in [-1.1, 1.1]:
+		var door := Build.box(1.9, lh - 0.6, 0.24, door_m)
+		door.position = Vector3(cx + ddx, lh / 2.0 + 0.6, fz - 0.05)
+		add_child(door)
+	# Gold-steel posts at the corners and either side of the doors.
+	var post_m := Build.mat(Build.hex(0xb59355), 0.35, 0.8)
+	for px in [-lw / 2.0, -3.4, 3.4, lw / 2.0]:
+		var post := Build.box(0.5, lh, 0.5, post_m)
+		post.position = Vector3(cx + px, lh / 2.0 + 0.5, fz)
+		add_child(post)
+	var roof := Build.box(lw + 1.8, 0.55, ld + 1.8, Build.mat(Build.hex(0x201c2a), 0.85))
+	roof.position = Vector3(cx, lh + 0.85, lz)
+	add_child(roof)
+
+	# Lit fascia + brand sign above the entrance.
+	var fascia := Build.emissive(Build.hex(0x1e1a08), gold, 2.4)
+	var fband := Build.box(lw + 1.8, 1.7, 0.3, fascia)
+	fband.position = Vector3(cx, lh + 1.95, fz - 0.9)
+	add_child(fband)
+	var sign_text := Label3D.new()
+	sign_text.text = "ANGEL VENTURES HQ"
+	sign_text.font_size = 90
+	sign_text.pixel_size = 0.011
+	sign_text.modulate = Color("1e1a08")
+	sign_text.outline_size = 0
+	sign_text.rotation.y = PI                                # face the plaza
+	sign_text.position = Vector3(cx, lh + 1.95, fz - 1.06)
+	add_child(sign_text)
+
+	# --- Hexagonal glass tower rising behind the lobby ---
+	var t_bot := 7.4
+	var t_top := 5.8
+	var th := 60.0
+	var tz := lz + ld / 2.0 - 3.0
+	var ty := lh
+	var tower := Build.cyl(t_top, t_bot, th, 6, Build.mat(Build.hex(0x211d2c), 0.2, 0.5))
+	tower.position = Vector3(cx, ty + th / 2.0, tz)
+	add_child(tower)
+	buildings.append({"x": cx, "z": tz, "w": t_bot * 2.0, "d": t_bot * 2.0, "h": th + ty})
+	var band := Build.emissive(Build.hex(0x2e2410), gold, 1.6)
+	for by in [12.0, 26.0, 40.0, 54.0]:
+		var ring := Build.cyl(t_top + 0.15, t_bot + 0.15, 0.7, 6, band)
+		ring.position = Vector3(cx, ty + by, tz)
+		add_child(ring)
+
+	# Gold crown band, then a violet spire cap — the mafia-sim tower's silhouette.
+	var crown_top := ty + th
+	var crown := Build.cyl(t_top + 0.3, t_top + 0.3, 2.4,
+		6, Build.emissive(Build.hex(0x3a2c0a), gold, 2.4))
+	crown.position = Vector3(cx, crown_top + 1.2, tz)
+	add_child(crown)
+	var cap_base := crown_top + 2.4
+	var cap := Build.cyl(0.0, t_top - 0.6, 7.0, 6, Build.emissive(Build.hex(0x241a3a), violet, 2.0))
+	cap.position = Vector3(cx, cap_base + 3.5, tz)
+	add_child(cap)
+
+	# A tall gold beacon of light on top, findable from across the city.
+	var beam_base := cap_base + 7.0
+	var beam_m := Build.emissive(Build.hex(0xf5c451), gold, 1.1)
+	beam_m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam_m.albedo_color.a = 0.22
+	var beam := Build.cyl(0.6, 0.9, 22.0, 12, beam_m)
+	beam.position = Vector3(cx, beam_base + 11.0, tz)
+	add_child(beam)
+	var beacon_top := Build.sphere(1.1, Build.emissive(Build.hex(0xfff2cf), Color("fff2cf"), 4.0))
+	beacon_top.position = Vector3(cx, beam_base + 22.0, tz)
+	add_child(beacon_top)
+
+	# Entrance prompt, floating at the lobby doorway.
+	var prompt := Label3D.new()
+	prompt.text = "ANGEL VENTURES  ·  PRESS E"
+	prompt.font_size = 56
+	prompt.pixel_size = 0.006
+	prompt.modulate = Color("f5dfa0")
+	prompt.outline_modulate = Color(0, 0, 0, 0.8)
+	prompt.position = Vector3(VENTURES.x, 2.6, VENTURES.z)
+	prompt.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(prompt)
 
 
 ## Index of the safehouse whose anchor block centre is (cx, cz), or -1 if none.

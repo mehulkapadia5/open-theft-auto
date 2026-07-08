@@ -101,6 +101,10 @@ func _build() -> void:
 	fsb.content_margin_bottom = 6
 	_bet_input.add_theme_stylebox_override("normal", fsb)
 	_bet_input.add_theme_stylebox_override("focus", fsb)
+	# Click-only focus: a gamepad's d-pad/stick navigation skips right over
+	# this onto the quick chips / lap picker / START — there's no way to type
+	# a bet into a LineEdit with a controller.
+	_bet_input.focus_mode = Control.FOCUS_CLICK
 	_bet_input.text_changed.connect(func(_t: String) -> void: _refresh())
 	col.add_child(_bet_input)
 	var quick := HBoxContainer.new()
@@ -111,6 +115,7 @@ func _build() -> void:
 		var b := _make_button(lbl, 158, GOLD)
 		b.pressed.connect(_quick_bet.bind(amt))
 		quick.add_child(b)
+	col.add_child(_lbl("Gamepad: L1 / R1 adjust the bet by a coarse step", 12, FAINT))
 
 	col.add_child(_lbl("Finish 1st: 10× bet   ·   2nd: 4×   ·   3rd: 2×   ·   else: lost",
 		13, DIM))
@@ -192,14 +197,43 @@ func _on_start() -> void:
 	_close()
 
 
+## Coarse gamepad-only bet stepper (L1 down / R1 up) — see the matching
+## helper in stock_terminal.gd for why this exists (the LineEdit itself is
+## click-only, unreachable with a controller).
+func _step_bet(dir: int) -> void:
+	var cur := _bet_value()
+	_bet_input.text = str(clampi(cur + dir * _dollar_step(cur), 0, GameState.money))
+	_refresh()
+
+
+func _dollar_step(current: int) -> int:
+	if current < 1000:
+		return 100
+	if current < 10000:
+		return 1000
+	if current < 100000:
+		return 10000
+	if current < 1000000:
+		return 100000
+	return 1000000
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not _open:
 		return
-	if event is InputEventJoypadButton and event.pressed \
-		and event.button_index == JOY_BUTTON_B:
-		_close()
-		get_viewport().set_input_as_handled()
-		return
+	if event is InputEventJoypadButton and event.pressed:
+		if event.button_index == JOY_BUTTON_B:
+			_close()
+			get_viewport().set_input_as_handled()
+			return
+		elif event.button_index == JOY_BUTTON_LEFT_SHOULDER:
+			_step_bet(-1)
+			get_viewport().set_input_as_handled()
+			return
+		elif event.button_index == JOY_BUTTON_RIGHT_SHOULDER:
+			_step_bet(1)
+			get_viewport().set_input_as_handled()
+			return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			_close()

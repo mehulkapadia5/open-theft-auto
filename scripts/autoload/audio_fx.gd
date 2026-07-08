@@ -13,8 +13,6 @@ var _rocket_player: AudioStreamPlayer   # continuous ascent engine loop
 var _wind_player: AudioStreamPlayer     # continuous re-entry wind roar loop
 
 # Pre-baked streams
-var _s_shoot: AudioStreamWAV
-var _s_shoot_noise: AudioStreamWAV
 var _s_hit: AudioStreamWAV
 var _s_coin_a: AudioStreamWAV
 var _s_coin_b: AudioStreamWAV
@@ -22,8 +20,18 @@ var _s_explode_noise: AudioStreamWAV
 var _s_explode_low: AudioStreamWAV
 var _s_siren_a: AudioStreamWAV
 var _s_siren_b: AudioStreamWAV
-var _s_gun: AudioStreamWAV          # real recorded gunshot (CC0)
-var _s_gun_sniper: AudioStreamWAV   # deeper boom for the sniper
+var _s_gun: AudioStreamWAV          # real recorded gunshot (CC0) — generic fallback
+var _s_gun_sniper: AudioStreamWAV   # deeper boom for the sniper (recorded sample)
+var _s_sniper_tail: AudioStreamWAV  # synthesized deep sub-boom layered under it
+# Distinct, synthesized per-weapon firing reports — see gunshot() and _gunshot().
+var _s_gun_pistol: AudioStreamWAV
+var _s_gun_revolver: AudioStreamWAV
+var _s_gun_smg: AudioStreamWAV
+var _s_gun_rifle: AudioStreamWAV
+var _s_gun_shotgun: AudioStreamWAV
+var _s_gun_rpg: AudioStreamWAV
+var _s_repulsor: AudioStreamWAV     # Iron Man hand repulsor energy blast
+var _s_missile: AudioStreamWAV      # Iron Man shoulder missile launch
 var _s_rocket_ignite: AudioStreamWAV
 var _s_rocket_loop: AudioStreamWAV
 var _s_wind_loop: AudioStreamWAV
@@ -33,8 +41,6 @@ func _ready() -> void:
 		var p := AudioStreamPlayer.new()
 		add_child(p)
 		_players.append(p)
-	_s_shoot = _tone(880.0, 0.05, "square", 0.5)
-	_s_shoot_noise = _noise(0.07, 0.55)
 	_s_hit = _tone(180.0, 0.08, "sawtooth", 0.6)
 	_s_coin_a = _tone(880.0, 0.06, "square", 0.45)
 	_s_coin_b = _tone(1320.0, 0.09, "square", 0.45)
@@ -45,10 +51,24 @@ func _ready() -> void:
 	_s_rocket_ignite = _rocket_ignition(1.1, 0.95)
 	_s_rocket_loop = _rocket_rumble(1.4, 0.85)
 	_s_wind_loop = _wind_noise(1.0, 0.8)
+	_s_repulsor = _repulsor(0.22, 0.7)
+	_s_missile = _missile_launch(0.5, 0.9)
 
 	# Real recorded gunfire (CC0, OpenGameArt "Free Firearm Sound Library").
 	_s_gun = load("res://assets/audio/gunshot.wav")
 	_s_gun_sniper = load("res://assets/audio/gunshot_sniper.wav")
+	_s_sniper_tail = _sniper_tail(0.65, 0.85)
+
+	# Per-weapon firing reports — each is a layered noise-snap + pitch-dropping
+	# "crack" tone + low body thump + noise tail (see _gunshot()), tuned so
+	# every gun in WeaponDB.LIST reads as a distinct weapon rather than a
+	# shared beep. See gunshot() for the name -> sound dispatch.
+	_s_gun_pistol = _gunshot(0.14, 0.7, 1900.0, 500.0, 0.9, 150.0, 0.5, 0.05, 0.25, 0.5, 0.95)
+	_s_gun_revolver = _gunshot(0.22, 0.75, 1500.0, 320.0, 0.95, 105.0, 0.68, 0.08, 0.42, 0.4, 1.0)
+	_s_gun_smg = _gunshot(0.07, 0.8, 2500.0, 950.0, 0.8, 230.0, 0.32, 0.03, 0.08, 0.62, 0.8)
+	_s_gun_rifle = _gunshot(0.17, 0.75, 1700.0, 380.0, 1.0, 120.0, 0.72, 0.07, 0.32, 0.45, 1.0)
+	_s_gun_shotgun = _gunshot(0.38, 0.9, 900.0, 190.0, 0.7, 72.0, 0.9, 0.13, 0.75, 0.22, 1.0)
+	_s_gun_rpg = _rpg_launch(0.55, 0.95)
 
 	# Looping background tracks on their own dedicated players.
 	_ambient_player = AudioStreamPlayer.new()
@@ -209,6 +229,128 @@ func _noise(dur: float, vol: float) -> AudioStreamWAV:
 		data.encode_s16(i * 2, int(clamp(s, -1.0, 1.0) * 32767.0))
 	return _wav(data)
 
+
+## The Iron Man hand repulsor — a short, punchy energy "pew" rather than a
+## firearm crack. A bright sine whose pitch sweeps sharply downward (the
+## charge-to-release snap) fattened with a detuned octave shimmer and a light
+## ring-mod sparkle, under a hard exponential decay. Deliberately nothing like
+## the recorded gunshot so a repulsor reads as a beam weapon.
+func _repulsor(dur: float, vol: float) -> AudioStreamWAV:
+	var n := int(MIX_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var phase := 0.0
+	for i in n:
+		var t := float(i) / float(n)
+		var f := 300.0 + 1250.0 * pow(1.0 - t, 2.2)   # 1550 Hz -> 300 Hz sweep
+		phase += f / MIX_RATE
+		var body := sin(phase * TAU)
+		var octave := 0.35 * sin(phase * TAU * 2.01)          # detuned = shimmer
+		var sparkle := 0.16 * sin(phase * TAU * 5.0) * sin(t * 120.0)
+		var env: float = pow(0.0008, t) * clampf(t / 0.012, 0.0, 1.0)
+		var s := (body + octave + sparkle) * env
+		data.encode_s16(i * 2, int(clamp(s * vol, -1.0, 1.0) * 32767.0))
+	return _wav(data)
+
+
+## The shoulder missile launch — a low ignition "thunk" under a rising
+## filtered-noise whoosh as the round clears the rail. Airier and lower than
+## the repulsor's tight pew so the two suit weapons stay distinct.
+func _missile_launch(dur: float, vol: float) -> AudioStreamWAV:
+	var n := int(MIX_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var lp := 0.0
+	for i in n:
+		var t := float(i) / float(n)
+		var white := randf() * 2.0 - 1.0
+		lp = lp + (white - lp) * (0.05 + 0.5 * t)            # low-pass opens up
+		var whoosh := lp * clampf(t / 0.05, 0.0, 1.0) * (1.0 - t)
+		var thump: float = sin(TAU * (70.0 + 40.0 * (1.0 - t)) * (t * dur)) * pow(0.0004, t) * 0.8
+		var s := whoosh * 1.5 + thump
+		data.encode_s16(i * 2, int(clamp(s * vol, -1.0, 1.0) * 32767.0))
+	return _wav(data)
+
+
+## Shared layered gunshot synth — every firearm's report is built from the
+## same four ingredients, just re-tuned per weapon (see the _s_gun_* bakes in
+## _ready()):
+##   1. a very short broadband noise "snap" (the transient click of the
+##      round leaving the barrel — real gunfire is mostly this, not a tone)
+##   2. a sharp downward-sweeping tone under it (the "crack" — what turns a
+##      noise burst into something that reads as a punch instead of a hiss)
+##   3. a low sine "thump" for body/weight, decaying a little slower than the
+##      crack so the heavier guns feel like they hit harder
+##   4. a low-passed noise tail that trails off — short/near-absent for the
+##      SMG's tight pop, long and heavy for the shotgun's boom
+## This replaces the old flat single-tone "beep" placeholder with something
+## that has an actual transient + body, the way a real gunshot does.
+func _gunshot(dur: float, snap_amt: float, crack_freq0: float, crack_freq1: float,
+		crack_amt: float, body_freq: float, body_amt: float, body_decay: float,
+		tail_amt: float, tail_cut: float, vol: float) -> AudioStreamWAV:
+	var n := int(MIX_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var phase := 0.0
+	var tail_lp := 0.0
+	for i in n:
+		var t := float(i) / float(n)
+		var snap_env: float = pow(0.0006, t / 0.05)
+		var snap := (randf() * 2.0 - 1.0) * snap_env * snap_amt
+		var cf: float = crack_freq1 + (crack_freq0 - crack_freq1) * pow(1.0 - t, 3.0)
+		phase += cf / MIX_RATE
+		var crack_env: float = pow(0.0008, t / 0.09)
+		var crack := sin(phase * TAU) * crack_env * crack_amt
+		var body_env: float = pow(0.001, t / body_decay)
+		var body := sin(TAU * body_freq * (t * dur)) * body_env * body_amt
+		var white := randf() * 2.0 - 1.0
+		tail_lp += (white - tail_lp) * tail_cut
+		var tail := tail_lp * (1.0 - t) * (1.0 - t) * tail_amt
+		var s := snap + crack + body + tail
+		data.encode_s16(i * 2, int(clamp(s * vol, -1.0, 1.0) * 32767.0))
+	return _wav(data)
+
+
+## The RPG's launch — a heavier, more mechanical cousin of the suit's
+## _missile_launch: a lower ignition thump under a bigger, slower-opening
+## noise whoosh, sized for a shoulder-fired rocket rather than a wrist-mounted
+## repeater.
+func _rpg_launch(dur: float, vol: float) -> AudioStreamWAV:
+	var n := int(MIX_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var lp := 0.0
+	for i in n:
+		var t := float(i) / float(n)
+		var thump_env: float = pow(0.0008, t / 0.1)
+		var thump: float = sin(TAU * 58.0 * (t * dur)) * thump_env * 0.9
+		var white := randf() * 2.0 - 1.0
+		lp += (white - lp) * 0.32
+		var whoosh := lp * clampf(t / 0.08, 0.0, 1.0) * pow(1.0 - t, 1.5) * 1.2
+		var s := thump + whoosh
+		data.encode_s16(i * 2, int(clamp(s * vol, -1.0, 1.0) * 32767.0))
+	return _wav(data)
+
+
+## A deep sub-bass boom + soft low-pass'd noise tail, layered under the
+## recorded sniper sample (see shoot_sniper()) to give it more weight without
+## touching the recording itself.
+func _sniper_tail(dur: float, vol: float) -> AudioStreamWAV:
+	var n := int(MIX_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var lp := 0.0
+	for i in n:
+		var t := float(i) / float(n)
+		var env: float = pow(0.002, t / 0.6)
+		var white := randf() * 2.0 - 1.0
+		lp += (white - lp) * 0.15
+		var sub := sin(TAU * 52.0 * (t * dur)) * env * 0.65
+		var s := (lp * 0.8 + sub) * env
+		data.encode_s16(i * 2, int(clamp(s * vol, -1.0, 1.0) * 32767.0))
+	return _wav(data)
+
+
 func _wav(data: PackedByteArray) -> AudioStreamWAV:
 	var st := AudioStreamWAV.new()
 	st.format = AudioStreamWAV.FORMAT_16_BITS
@@ -226,12 +368,52 @@ func _play(stream: AudioStreamWAV, db := 0.0) -> void:
 	p.volume_db = db
 	p.play()
 
+## Generic fallback report (the real recorded sample) — used by cops, guards
+## and any caller that just wants "a gunshot" without picking a specific
+## weapon (see gunshot() for the full per-weapon dispatch).
 func shoot() -> void:
 	_play(_s_gun, -3.0)
 
 
+## The sniper's report — the recorded sample, layered with a synthesized deep
+## sub-boom tail for extra weight (see _sniper_tail()).
 func shoot_sniper() -> void:
 	_play(_s_gun_sniper, -1.0)
+	_play(_s_sniper_tail, -5.0)
+
+
+## Per-weapon firing report — dispatches on WeaponDB.LIST's "name" field so
+## every gun (PISTOL/REVOLVER/SMG/RIFLE/SHOTGUN/SNIPER/RPG) gets its own
+## distinct, punchy sound instead of one shared beep. Melee weapons
+## (FISTS/KNIFE) have no report and should never reach this — see
+## _fire_weapon()'s `if w.sound:` guard in game.gd. Anything unrecognised
+## falls back to the generic recorded shoot().
+func gunshot(weapon_name: String) -> void:
+	match weapon_name:
+		"PISTOL":
+			_play(_s_gun_pistol, -3.0)
+		"REVOLVER":
+			_play(_s_gun_revolver, -2.0)
+		"SMG":
+			_play(_s_gun_smg, -6.0)
+		"RIFLE":
+			_play(_s_gun_rifle, -2.0)
+		"SHOTGUN":
+			_play(_s_gun_shotgun, -1.0)
+		"SNIPER":
+			shoot_sniper()
+		"RPG":
+			_play(_s_gun_rpg, -2.0)
+		_:
+			shoot()
+
+
+func repulsor() -> void:
+	_play(_s_repulsor, -4.0)
+
+
+func missile() -> void:
+	_play(_s_missile, -2.0)
 
 func hit() -> void:
 	_play(_s_hit, -6.0)

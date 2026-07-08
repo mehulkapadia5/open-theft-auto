@@ -1,0 +1,11 @@
+Model Information:
+* title:	Low Poly Boeing 787 Dreamliner
+* source:	https://sketchfab.com/3d-models/low-poly-boeing-787-dreamliner-50baa323fabd49a6b861096cb88e5c25
+* author:	Mauro3D (https://sketchfab.com/maurogsw)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Low Poly Boeing 787 Dreamliner" (https://sketchfab.com/3d-models/low-poly-boeing-787-dreamliner-50baa323fabd49a6b861096cb88e5c25) by Mauro3D (https://sketchfab.com/maurogsw) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

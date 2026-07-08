@@ -1,7 +1,8 @@
 extends Node
-## Local persistent save — money, weapons, owned vehicles, suit tier, properties
-## and stock holdings, written to user:// as JSON. Auto-saves on a timer and on
-## quit; cleared when the player picks "New Game".
+## Local persistent save — money, weapons, owned vehicles, suit tier, properties,
+## stock holdings, reputation/philanthropy and the angel-investing portfolio,
+## written to user:// as JSON. Auto-saves on a timer and on quit; cleared when
+## the player picks "New Game".
 
 const PATH := "user://open_theft_auto_save.json"
 const AUTOSAVE_EVERY := 10.0
@@ -39,6 +40,19 @@ func save_now() -> void:
 			"symbol": s.symbol, "price": s.price, "base": s.base,
 			"mode": s.mode, "mode_ticks": s.mode_ticks, "rate": s.rate,
 		})
+	# The venture portfolio travels whole — the open deal board is fine to
+	# regenerate fresh on load (Ventures.reset() always keeps 5 deals open).
+	var venture_portfolio := []
+	for p in Ventures.portfolio:
+		var row := {
+			"company": p.company, "founder": p.founder, "sector": p.sector,
+			"emoji": p.emoji, "risk": p.risk, "equity": p.equity,
+			"invested": p.invested, "value": p.value, "stage": p.stage,
+			"status": p.status,
+		}
+		if p.has("payout"):
+			row["payout"] = p.payout
+		venture_portfolio.append(row)
 
 	var d := {
 		"money": GameState.money,
@@ -50,6 +64,11 @@ func save_now() -> void:
 		"active_property": Garage.active_property,
 		"holdings": holdings,
 		"market": market,
+		"respect": GameState.respect,
+		"happiness": GameState.happiness,
+		"total_donated": GameState.total_donated,
+		"venture_portfolio": venture_portfolio,
+		"venture_realised": Ventures.realised,
 	}
 	var f := FileAccess.open(PATH, FileAccess.WRITE)
 	if f == null:
@@ -84,6 +103,10 @@ func load_into() -> bool:
 	Garage.properties = _int_array(d.get("properties", []))
 	Garage.active_property = int(d.get("active_property", -1))
 
+	GameState.respect = clampf(float(d.get("respect", GameState.respect)), 0.0, 100.0)
+	GameState.happiness = clampf(float(d.get("happiness", GameState.happiness)), 0.0, 100.0)
+	GameState.total_donated = int(d.get("total_donated", 0))
+
 	var holdings = d.get("holdings", [])
 	if typeof(holdings) == TYPE_ARRAY:
 		for h in holdings:
@@ -110,6 +133,33 @@ func load_into() -> bool:
 					s.history = [s.price] as Array
 					break
 		StockMarket.updated.emit()
+
+	# Ventures.reset() already ran in _on_start, leaving a fresh 5-deal board —
+	# only the portfolio + realised P/L need restoring on top of that.
+	Ventures.realised = int(d.get("venture_realised", 0))
+	var vport = d.get("venture_portfolio", [])
+	if typeof(vport) == TYPE_ARRAY:
+		var restored: Array = []
+		for row in vport:
+			if typeof(row) != TYPE_DICTIONARY:
+				continue
+			var holding := {
+				"id": 0, "company": str(row.get("company", "")),
+				"founder": str(row.get("founder", "")),
+				"sector": str(row.get("sector", "")),
+				"emoji": str(row.get("emoji", "🚀")),
+				"risk": str(row.get("risk", "med")),
+				"equity": float(row.get("equity", 10.0)),
+				"invested": int(row.get("invested", 0)),
+				"value": int(row.get("value", 0)),
+				"stage": clampi(int(row.get("stage", 0)), 0, 4),
+				"status": str(row.get("status", "active")),
+			}
+			if row.has("payout"):
+				holding["payout"] = int(row.payout)
+			restored.append(holding)
+		Ventures.portfolio = restored
+		Ventures.updated.emit()
 	return true
 
 

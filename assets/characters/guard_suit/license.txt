@@ -1,0 +1,11 @@
+Model Information:
+* title:	Man Dressed In Suit
+* source:	https://sketchfab.com/3d-models/man-dressed-in-suit-ae103052b58a450397f42a189aa726b7
+* author:	3d-character-br (https://sketchfab.com/3d-character-br)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Man Dressed In Suit" (https://sketchfab.com/3d-models/man-dressed-in-suit-ae103052b58a450397f42a189aa726b7) by 3d-character-br (https://sketchfab.com/3d-character-br) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
