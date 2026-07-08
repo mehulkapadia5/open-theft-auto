@@ -249,6 +249,7 @@ var _facility_hint_shown := false   # one-time cryptic toast about the hidden fa
 # controllable free-flight + hover-landing on either body.
 const CRAFT_HOVER_HEIGHT := 8.0      # metres risen during the slow hover-off
 const CRAFT_HOVER_TIME := 2.0        # seconds the hover climb takes
+const CRAFT_SPOOL_TIME := 2.2        # seconds holding at hover while engines spool
 const CRAFT_HYPER_MIN_TIME := 3.0    # minimum seconds spent in the hyperspeed burn
 const CRAFT_HYPER_MAX_TIME := 5.0    # hard cap, in case altitude is never reached
 const CRAFT_HYPER_VY := 850.0        # m/s climb rate the hyperspeed burn ramps to
@@ -3777,25 +3778,42 @@ func _update_spacecraft(v: Dictionary, dt: float) -> void:
 	match v.phase:
 		"landed":
 			# Parked (Earth or Moon) — holding thrust (or fly-up) kicks off
-			# the hover launch; otherwise it just sits there, engine cold.
+			# the hover launch; otherwise it just sits there, engine cold,
+			# always resting FLAT (never a leftover flight attitude).
 			v.speed = 0.0
 			v.vy = 0.0
+			v.pitch = 0.0
+			v.roll = 0.0
 			if thrust > 0.1 or climb > 0.1:
 				v.phase = "hover"
 				v.phase_t = 0.0
 				AudioFX.spacecraft_engine_start()
 				_show_objective("Lifting off...", 3.0)
 		"hover":
-			# A slow, floaty, scripted rise with a gentle bob — no lateral
-			# control yet, just ~2 s to clear the pad.
+			# A slow, floaty, scripted VERTICAL rise with a gentle bob — no
+			# lateral control yet, just ~2 s to clear the pad.
 			var ground_ref: float = _spacecraft_ground_y(v)
 			var t: float = clampf(v.phase_t / CRAFT_HOVER_TIME, 0.0, 1.0)
 			var bob: float = sin(_now * 3.0) * 0.15 * t
 			v.pos.y = ground_ref + CRAFT_HOVER_HEIGHT * t + bob
-			thrust_fx = 0.4
+			thrust_fx = 0.3
 			if randf() < 0.4:
 				_spacecraft_dust(v)
 			if t >= 1.0:
+				v.phase = "spool"
+				v.phase_t = 0.0
+				_show_objective("Engines spooling...", 2.5)
+		"spool":
+			# Holding at hover height while the engines slowly spool to full
+			# power — glow brightens, the airframe trembles harder and the
+			# engine note climbs... and then the sudden hyperspeed leap.
+			var ground_s: float = _spacecraft_ground_y(v)
+			var s: float = clampf(v.phase_t / CRAFT_SPOOL_TIME, 0.0, 1.0)
+			var bob_s: float = sin(_now * (3.0 + s * 9.0)) * (0.15 + s * 0.25)
+			v.pos.y = ground_s + CRAFT_HOVER_HEIGHT + bob_s
+			thrust_fx = 0.3 + s * 0.7
+			_add_cam_shake(0.04 + s * 0.22)
+			if s >= 1.0:
 				v.phase = "hyper"
 				v.phase_t = 0.0
 				_show_objective("HYPERSPEED", 2.0)
@@ -3832,7 +3850,7 @@ func _update_spacecraft(v: Dictionary, dt: float) -> void:
 					_show_objective("BACK IN SPACE ABOVE THE MOON — Press E / Interact to jump to EARTH.", 7.0)
 		"space":
 			# Free flight — pitch via fly up/down, yaw via steer, thrust via
-			# forward/back. Snappy handling, no drag, nothing to collide with.
+			# forward/back. Snappy handling, no drag.
 			v.yaw += turn * 1.1 * dt
 			v.pitch = clampf(v.pitch + climb * 0.9 * dt, -1.2, 1.2)
 			v.roll = lerp(v.roll, -turn * 0.4, dt * 3.0)
@@ -3841,9 +3859,23 @@ func _update_spacecraft(v: Dictionary, dt: float) -> void:
 			var fwd := Vector3(sin(v.yaw) * cos(v.pitch), sin(v.pitch), cos(v.yaw) * cos(v.pitch))
 			v.pos += fwd * v.speed * dt
 			thrust_fx = 0.5 + 0.3 * clampf(v.speed / CRAFT_SPACE_MAX_SPEED, 0.0, 1.0)
+			# Ground guard: diving toward the surface hands over to the
+			# hover-descent instead of flying straight through the terrain.
+			var guard_floor: float = _spacecraft_ground_y(v)
+			if v.pos.y < guard_floor + 30.0:
+				v.pos.y = maxf(v.pos.y, guard_floor + 4.0)
+				v.phase = "moon_descent" if v.leg == "moon" else "earth_descent"
+				v.phase_t = 0.0
+				v.vy = 0.0
+				v.speed = minf(v.speed, 20.0)
+				_show_objective("Entering landing hover — fly-down to descend, land where you like.", 4.0)
 		"moon_descent", "earth_descent":
 			# Controllable hover-descent — fly-down sinks it, the sticks drift
 			# it sideways, clamped so it can never tunnel through the ground.
+			# The airframe levels out on the way down, so it always touches
+			# down flat instead of keeping whatever pitch it dove in with.
+			v.pitch = move_toward(v.pitch, 0.0, 1.4 * dt)
+			v.roll = move_toward(v.roll, 0.0, 1.4 * dt)
 			v.vy = move_toward(v.vy, -climb * CRAFT_DESCENT_SPEED - 2.0, 20.0 * dt)
 			v.yaw += turn * 0.9 * dt
 			v.speed = move_toward(v.speed, thrust * 24.0, 30.0 * dt)
@@ -3856,6 +3888,8 @@ func _update_spacecraft(v: Dictionary, dt: float) -> void:
 				v.pos.y = floor_y
 				v.vy = 0.0
 				v.speed = 0.0
+				v.pitch = 0.0
+				v.roll = 0.0
 				v.phase = "landed"
 				v.phase_t = 0.0
 				_spacecraft_dust(v)
