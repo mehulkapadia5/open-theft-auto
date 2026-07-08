@@ -17,13 +17,43 @@ const NPC_HAIR := [0x2a1a08, 0x4a2a1a, 0xaa8866, 0x222222, 0xccaa44, 0xddccaa]
 const CONVOY_SPEED := 17.0       # how fast the motorcade rolls along its route
 const CONVOY_SPACING := 9.0      # gap between convoy vehicles along the route
 
-# ---------------- Real glTF vehicle models (plane / helicopter / rocket) ----
-# Each is a low-poly Sketchfab model (CC-BY-4.0 — see README credits) fitted
-# to game space exactly the way CarMesh fits the McLaren F1 (car_mesh.gd):
-# raw AABB probed once with a throwaway SceneTree script, then a uniform
-# scale + a recentring offset bakes the model into the vehicle's local space
-# at build time. See _make_plane / _make_helicopter / _make_rocket for how
-# these combine into a transform.
+# ---------------- Wealth-milestone celebrations ----------------
+# Each fires once, the first time GameState.money crosses its "amount" going
+# up (see GameState.milestones_hit / _check_wealth_milestones). "celebrants"
+# congratulate the player on foot (see _spawn_celebration); "respect" is a
+# one-off GameState.add_respect() bump scaled to the size of the milestone.
+const WEALTH_MILESTONES := [
+	{"amount": 1_000, "celebrants": 3, "respect": 2.0,
+		"msg": "$1,000 — your first grand! A passerby gives you a nod."},
+	{"amount": 100_000, "celebrants": 3, "respect": 4.0,
+		"msg": "$100,000 — six figures! A knot of strangers stops to shake your hand."},
+	{"amount": 1_000_000, "celebrants": 4, "respect": 6.0,
+		"msg": "$1,000,000 — you're a MILLIONAIRE. A little crowd gathers to celebrate."},
+	{"amount": 100_000_000, "celebrants": 5, "respect": 10.0,
+		"msg": "$100,000,000 — nine figures. The whole block turns out to cheer."},
+	{"amount": 1_000_000_000, "celebrants": 5, "respect": 15.0,
+		"msg": "$1,000,000,000 — you're a BILLIONAIRE. The street erupts."},
+	{"amount": 10_000_000_000, "celebrants": 6, "respect": 20.0,
+		"msg": "$10,000,000,000 — TEN BILLION. Strangers are filming you, cameras everywhere."},
+	{"amount": 1_000_000_000_000, "celebrants": 6, "respect": 30.0,
+		"msg": "$1 TRILLION — the first trillionaire in history. The whole city is talking."},
+]
+# How long celebrants linger cheering in place before wandering off, and how
+# far off-screen around the player they spawn.
+const CELEBRATION_CHEER_MIN := 6.0
+const CELEBRATION_CHEER_MAX := 10.0
+const CELEBRATION_SPAWN_DIST := 9.0
+
+# ---------------- Real glTF vehicle models (plane / helicopter / shuttle / --
+# ---------------- spacecraft) ------------------------------------------------
+# Each is a low-poly Sketchfab model fitted to game space exactly the way
+# CarMesh fits the McLaren F1 (car_mesh.gd): raw AABB probed once with a
+# throwaway SceneTree script, then a uniform scale + a recentring offset bakes
+# the model into the vehicle's local space at build time. See _make_plane /
+# _make_helicopter / _make_rocket / _make_spacecraft for how these combine
+# into a transform. The plane and helicopter are CC-BY-4.0; the shuttle and
+# spacecraft are Sketchfab Standard License — see README credits for the
+# exact terms per model.
 const PLANE_SCENE: PackedScene = preload("res://assets/vehicles/plane_787/scene.gltf")
 # "Low Poly Boeing 787 Dreamliner" (Mauro3D, CC-BY — see README). Raw AABB is a
 # 60.67 x 17.29 x 69.28 (wingspan x height x length) box; the tail sits at -Z so
@@ -60,16 +90,39 @@ const HELI_MODEL_MIN_Y := -0.036207
 const HELI_MAIN_ROTOR_HUB := Vector3(0.0, 3.410604, 2.295604)   # flat disc, spins about Y
 const HELI_TAIL_ROTOR_HUB := Vector3(-0.398467, 3.78741, -7.589099)  # disc faces X, spins about X
 
-const ROCKET_SCENE: PackedScene = preload("res://assets/vehicles/rocket/scene.gltf")
-# Raw AABB probed at (-66.797,-13.455,-60.805)..(55.963,192.161,49.127) — an
-# un-normalised FBX import, ~123 x 206 x 110 (x/y/z). ROCKET_MODEL_SCALE
-# makes it ~14.6 m tall, matching the old procedural body(10m)+nose(4.6m)
-# stack this replaces; the procedural booster stage below (separation,
-# tumble, its own flame) is untouched.
-const ROCKET_MODEL_SCALE := 0.071
-const ROCKET_MODEL_CENTER_X := -5.417490
-const ROCKET_MODEL_CENTER_Z := -5.838830
-const ROCKET_MODEL_MIN_Y := -13.45464
+const SHUTTLE_SCENE: PackedScene = preload("res://assets/vehicles/shuttle/scene.gltf")
+# "Space Shuttle with boosters" (assetfactory, Sketchfab Standard License —
+# see README). One glTF, three independent meshes lying nose-to-tail along
+# their own shared local Z, all sharing one coordinate frame: Object_2 = the
+# orbiter (1.67 x 1.40 x 3.75 raw, has the wings), Object_3 = the external
+# tank (1.16 x 1.06 x 3.60 raw), Object_4 = the twin SRB boosters (1.30 x
+# 0.42 x 3.07 raw). Probed with a throwaway SceneTree script the same way as
+# the plane/heli above (composing each mesh's transform chain, then rendering
+# an axis-gizmo'd screenshot to confirm nose direction). The file's own import
+# root carries a glTF axis-conversion matrix that — for this particular
+# model — exactly UNDOES itself against the +90°-about-X rotation needed to
+# stand a Z-long, Y-authored-up model on its tail: reparenting each Object_N
+# mesh straight out of that hierarchy and applying nothing but a uniform
+# scale reproduces the model's original upright, nose-up Blender authoring
+# exactly (verified against the composed import-hierarchy transforms), so
+# _make_rocket() below needs no rotation at all — just SHUTTLE_MODEL_SCALE
+# and a vertical offset that plants the booster nozzles on the pad.
+const SHUTTLE_MODEL_SCALE := 12.7        # stack stands ~47.9 m tall (raw span 3.771)
+const SHUTTLE_RAW_MIN_Y := -1.431289     # booster's lowest point (nozzles), raw mesh Y
+const SHUTTLE_BASE_OFFSET := -SHUTTLE_RAW_MIN_Y * SHUTTLE_MODEL_SCALE
+
+const SPACECRAFT_SCENE: PackedScene = preload("res://assets/vehicles/spacecraft/scene.gltf")
+# "CLASS-3 FIGHTER SPACESHIP HODBIN" (Kerem Kavalci, Sketchfab Standard
+# License — see README). The file holds three copies of the same fighter
+# side by side (Cube_034 / Cube_005 / Cube_007); _make_spacecraft() keeps
+# only the centred copy ("Cube_007") and frees the other two. Raw AABB (both
+# of Cube_007's mesh halves combined, post-import) is 26.78 x 13.40 x 51.06,
+# nose already pointing +Z — the same forward convention as the plane/heli
+# above (confirmed with an axis-gizmo render), so no yaw correction is
+# needed. SPACECRAFT_MODEL_SCALE brings it to an ~18 m fighter.
+const SPACECRAFT_MODEL_SCALE := 0.35
+const SPACECRAFT_MODEL_CENTER_Z := -8.86193
+const SPACECRAFT_MODEL_MIN_Y := -6.113062
 
 # ---------------- Nodes ----------------
 var world: CityWorld
@@ -139,6 +192,11 @@ var npcs: Array = []
 var cops: Array = []
 var vips: Array = []        # rich civilians — big cash payout when killed
 var guards: Array = []      # bodyguards escorting the VIPs
+# Wealth-milestone congratulators — a separate, purely cosmetic pool (no hp,
+# never a shootable victim, never counted toward the 40-NPC top-up cap) so the
+# celebration can't interact with combat/wanted systems. See
+# _spawn_celebration / _update_celebrations.
+var celebrants: Array = []
 var bullets: Array = []
 var particles: Array = []
 var pickups: Array = []
@@ -182,9 +240,22 @@ var racers: Array = []           # AI race cars looping the F1 circuit
 # Space programme — the rocket journey to the Moon and back.
 var space_state := ""            # "" / ascent / space_climb / space / moon_descent
 								 # / moon_landed / moon / moon_ascent / reentry / splashdown
-var _falling_boosters: Array = []   # separated booster stages tumbling down
-const ROCKET_BOOSTER_H := 15.0   # height of the booster stage
+var _falling_boosters: Array = []   # separated shuttle stages (booster + tank) tumbling down
 const ROCKET_BASE_Y := 0.85      # launch-pad top
+var _facility_hint_shown := false   # one-time cryptic toast about the hidden facility
+# Spacecraft flight tuning — see _update_spacecraft() for the phase machine
+# ("landed" -> "hover" -> "hyper" -> "space" -> ["moon_descent"/"earth_descent"]
+# -> "landed") that drives the hover-then-hyperspeed launch and the fully
+# controllable free-flight + hover-landing on either body.
+const CRAFT_HOVER_HEIGHT := 8.0      # metres risen during the slow hover-off
+const CRAFT_HOVER_TIME := 2.0        # seconds the hover climb takes
+const CRAFT_HYPER_MIN_TIME := 3.0    # minimum seconds spent in the hyperspeed burn
+const CRAFT_HYPER_MAX_TIME := 5.0    # hard cap, in case altitude is never reached
+const CRAFT_HYPER_VY := 850.0        # m/s climb rate the hyperspeed burn ramps to
+const CRAFT_EARTH_SPACE_ALT := 1700.0            # height above the pad that counts as "reached space"
+const CRAFT_MOON_SPACE_ALT := 300.0              # height above the Moon that counts as "reached space"
+const CRAFT_SPACE_MAX_SPEED := 160.0  # cruise speed once freely flying in space
+const CRAFT_DESCENT_SPEED := 14.0     # max fall rate while hover-descending to land
 # President & motorcade
 var pres_state := "home"         # home / toairport / atairport / tohome / athome
 var pres_timer := 75.0           # countdown to the next motorcade run
@@ -204,6 +275,12 @@ var _player_prog := 0.0          # player's monotonic race progress (centreline 
 var _player_prev_idx := 0        # last frame's nearest centreline index (unwrap)
 var _mouse_rel := Vector2.ZERO
 const VIP_TARGET := 4            # VIPs are unlimited — kept topped up to this many
+# Wealth-milestone tiers already crossed this tick but not yet celebrated —
+# deferred while the player is in a vehicle / suited / on the Moon / in space,
+# and drained one at a time by _update_pending_milestones() once they're next
+# on foot on Earth. Holds indices into WEALTH_MILESTONES.
+var _pending_milestones: Array = []
+var _milestone_check_t := 0.0    # counts down to the next ~1 Hz milestone check
 
 # ---------------- Shared materials ----------------
 var head_mat: StandardMaterial3D
@@ -293,6 +370,7 @@ func _ready() -> void:
 	add_child(venture_terminal)
 	venture_terminal.closed.connect(_on_terminal_closed)
 	Ventures.toast.connect(func(text: String) -> void: _show_objective(text, 4.5))
+	Forbes.toast.connect(func(text: String) -> void: _show_objective(text, 5.5))
 
 	# Touch overlay for tablet builds; desktop keeps the keyboard/mouse path.
 	if OS.has_feature("mobile"):
@@ -346,6 +424,7 @@ func _on_start() -> void:
 	GameState.reset_run()
 	StockMarket.reset()
 	Ventures.reset()
+	Forbes.reset()
 	RaceManager.reset()
 	RaceManager.track = world.track
 	Garage.reset()
@@ -361,6 +440,9 @@ func _on_start() -> void:
 	_race_count_shown = -1
 	_player_prog = 0.0
 	_owned_spawn = null
+	_clear_celebration()
+	_pending_milestones.clear()
+	_milestone_check_t = 0.0
 	var s := world.find_safe_spawn()
 	player_pos = Vector3(s.x, 0, s.y)
 	player_node.position = player_pos
@@ -374,6 +456,7 @@ func _on_start() -> void:
 	_spawn_iron_suit()
 	_spawn_racers()
 	_spawn_rocket()
+	_spawn_spacecraft()
 	_spawn_moon_buggy()
 	space_state = ""
 	AudioFX.start_ambient()
@@ -412,6 +495,9 @@ func _on_start() -> void:
 func _die() -> void:
 	GameState.paused = true
 	GameState.money = max(0, GameState.money - (10 + randi() % 6))
+	# A mid-celebration death would otherwise leave a crowd cheering an empty
+	# spot after the respawn teleport — just drop it, it's purely cosmetic.
+	_clear_celebration()
 	hud.show_death()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
@@ -425,6 +511,7 @@ func _respawn() -> void:
 		space_state = ""
 		_set_space_sky(false)
 		AudioFX.rocket_engine_stop()
+		AudioFX.spacecraft_engine_stop()
 		AudioFX.wind_stop()
 	for c in cops:
 		c.node.queue_free()
@@ -983,10 +1070,12 @@ func _phone_teleport(x: float, z: float) -> void:
 	in_car = null
 	parachuting = false
 	cam_dist = 6.5
+	_clear_celebration()
 	if space_state != "":
 		space_state = ""
 		_set_space_sky(false)
 		AudioFX.rocket_engine_stop()
+		AudioFX.spacecraft_engine_stop()
 		AudioFX.wind_stop()
 	player_pos = Vector3(x, 0, z)
 	player_node.position = player_pos
@@ -1000,10 +1089,12 @@ func _phone_teleport(x: float, z: float) -> void:
 # =====================================================================
 func _process(delta: float) -> void:
 	if not GameState.started or GameState.paused:
-		# Nothing below runs while paused, so any looping rocket audio would
-		# otherwise be stuck playing forever — this is the one place that
-		# always runs regardless of what the game was doing when it paused.
+		# Nothing below runs while paused, so any looping rocket/spacecraft
+		# audio would otherwise be stuck playing forever — this is the one
+		# place that always runs regardless of what the game was doing when
+		# it paused.
 		AudioFX.rocket_engine_stop()
+		AudioFX.spacecraft_engine_stop()
 		AudioFX.wind_stop()
 		return
 	var dt: float = min(0.05, delta)
@@ -1042,6 +1133,8 @@ func _process(delta: float) -> void:
 	elif in_car != null:
 		if in_car.get("is_rocket", false):
 			_update_rocket(in_car, dt)
+		elif in_car.get("is_spacecraft", false):
+			_update_spacecraft(in_car, dt)
 		elif in_car.get("moon", false):
 			_update_moon_buggy(in_car, dt)
 		elif in_car.get("is_heli", false):
@@ -1088,6 +1181,14 @@ func _process(delta: float) -> void:
 	_update_police_heli(dt)
 	_update_vips(dt)
 	_update_guards(dt)
+	# Wealth-milestone storyline: cheap ~1 Hz crossing check, then drain the
+	# celebration queue and animate whichever congratulation is in progress.
+	_milestone_check_t -= dt
+	if _milestone_check_t <= 0.0:
+		_milestone_check_t = 1.0
+		_check_wealth_milestones()
+	_update_pending_milestones()
+	_update_celebrations(dt)
 	_update_president(dt)
 	_update_my_detail(dt)
 	_update_wanted(dt)
@@ -1125,6 +1226,11 @@ func _process(delta: float) -> void:
 	_update_race(dt)
 	AudioFX.set_radio(in_car != null and not in_car.is_plane
 		and not in_car.get("is_boat", false))
+	# A cryptic, one-time nudge toward the hidden facility — no waypoint or
+	# minimap marker ever points to it; this is the only hint the player gets.
+	if not _facility_hint_shown and _now > 240.0:
+		_facility_hint_shown = true
+		_show_objective("Strange lights reported in the northern mountains...", 6.0)
 	_update_camera(dt)
 	_push_hud()
 
@@ -1648,6 +1754,9 @@ func _update_helicopter(v: Dictionary, dt: float) -> void:
 func _try_enter_exit() -> void:
 	if in_car != null:
 		var v = in_car
+		if v.get("is_spacecraft", false):
+			_spacecraft_interact(v)
+			return
 		if v.get("is_rocket", false):
 			_exit_rocket(v)
 			return
@@ -1713,6 +1822,14 @@ func _try_enter_exit() -> void:
 			else:
 				space_state = "ascent"
 				_show_objective("ROCKET — climb to space, then the Moon.", 9.0)
+		elif best.get("is_spacecraft", false):
+			cam_dist = best.get("cam_dist", 20.0)
+			if best.phase == "landed" and best.leg == "moon":
+				_show_objective("SPACECRAFT — hold thrust to lift off from the Moon: hover, then hyperspeed home.", 8.0)
+			elif best.phase == "landed":
+				_show_objective("SPACECRAFT — hold thrust to lift off: hover, then hyperspeed to space.", 8.0)
+			else:
+				_show_objective("Back in the cockpit.", 3.0)
 		elif best.get("is_heli", false):
 			cam_dist = best.get("cam_dist", 15.0)
 			_show_objective("Helicopter airborne — release everything to hover.", 8.0)
@@ -3132,6 +3249,141 @@ func _update_guards(dt: float) -> void:
 
 
 # =====================================================================
+# Wealth milestones — celebrations
+# =====================================================================
+## Cheap ~1 Hz check: has GameState.money crossed a WEALTH_MILESTONES tier it
+## hasn't hit before? Recording happens immediately (so it truly fires only
+## once, no matter how long the celebration itself waits to play out); the
+## celebration/toast is queued and drained by _update_pending_milestones()
+## once the player is next on foot on Earth.
+func _check_wealth_milestones() -> void:
+	for i in WEALTH_MILESTONES.size():
+		var amt: int = WEALTH_MILESTONES[i].amount
+		if GameState.money >= amt and not GameState.milestones_hit.has(amt):
+			GameState.milestones_hit.append(amt)
+			_pending_milestones.append(i)
+
+
+## True only when the player is walking around the open city on foot — not
+## driving/flying/suited/parachuting, not on the Moon or in space, and not
+## inside an interior. Milestone celebrations wait for this.
+func _can_celebrate_now() -> bool:
+	return in_car == null and suit_state == "none" and not parachuting \
+		and space_state == "" and not in_trading_floor
+
+
+## Drains one queued milestone at a time — never starts a second celebration
+## while one is already playing out, and just waits (no timeout) while the
+## player is somewhere celebrants can't reach them.
+func _update_pending_milestones() -> void:
+	if not celebrants.is_empty() or _pending_milestones.is_empty():
+		return
+	if not _can_celebrate_now():
+		return
+	var idx: int = _pending_milestones.pop_front()
+	var tier: Dictionary = WEALTH_MILESTONES[idx]
+	_show_objective(tier.msg, 8.0)
+	GameState.add_respect(tier.respect)
+	_spawn_celebration(int(tier.celebrants))
+
+
+## Spawns `n` civilians just off-screen around the player to come congratulate
+## them. They walk in (continuously tracking the player, so it's robust to the
+## player moving while they approach), stop a couple of metres out facing the
+## player, cheer in place for a while, then wander off and despawn.
+func _spawn_celebration(n: int) -> void:
+	for i in n:
+		var ang := randf() * TAU
+		var dist := CELEBRATION_SPAWN_DIST + randf() * 4.0
+		var sx := player_pos.x + sin(ang) * dist
+		var sz := player_pos.z + cos(ang) * dist
+		var node := Human.build_model(Human.CIVILIAN_KINDS.pick_random(),
+			NPC_SKINS.pick_random(), NPC_SHIRTS.pick_random(),
+			NPC_PANTS.pick_random(), NPC_HAIR.pick_random(), -1, randf() < 0.5)
+		node.position = Vector3(sx, 0, sz)
+		add_child(node)
+		celebrants.append({
+			"node": node, "pos": Vector3(sx, 0, sz), "yaw": randf() * TAU,
+			"state": "approach", "walk_phase": randf() * TAU,
+			"ang_offset": randf() * TAU, "dist_offset": 1.5 + randf() * 1.0,
+			"timer": CELEBRATION_CHEER_MIN + randf() * (CELEBRATION_CHEER_MAX - CELEBRATION_CHEER_MIN),
+		})
+
+
+## Per-frame celebrant AI: approach -> cheer (in place, facing the player) ->
+## leave -> despawn. Entirely self-contained — celebrants have no hp and never
+## touch the npcs/cops/guards/vips pools, so combat, wanted heat and the
+## vehicle run-over/bullet/explosion checks never see them.
+func _update_celebrations(dt: float) -> void:
+	if celebrants.is_empty():
+		return
+	var keep: Array = []
+	for c in celebrants:
+		match c.state:
+			"approach":
+				var dest: Vector3 = player_pos + \
+					Vector3(sin(c.ang_offset), 0, cos(c.ang_offset)) * c.dist_offset
+				var dx: float = dest.x - c.pos.x
+				var dz: float = dest.z - c.pos.z
+				var d := sqrt(dx * dx + dz * dz)
+				if d < 0.5:
+					c.state = "cheer"
+				else:
+					c.yaw = atan2(dx, dz)
+					var nx: float = c.pos.x + sin(c.yaw) * 3.4 * dt
+					var nz: float = c.pos.z + cos(c.yaw) * 3.4 * dt
+					if not world.collides_at(nx, c.pos.z, 0.4):
+						c.pos.x = nx
+					if not world.collides_at(c.pos.x, nz, 0.4):
+						c.pos.z = nz
+				c.walk_phase += dt * 7.0
+				Human.animate(c.node, c.walk_phase, true, 0.55, 0.33)
+				c.node.position.y = 0.0
+			"cheer":
+				c.timer -= dt
+				var dx2: float = player_pos.x - c.pos.x
+				var dz2: float = player_pos.z - c.pos.z
+				c.yaw = atan2(dx2, dz2)
+				c.walk_phase += dt * 10.0
+				# A bouncy, arms-pumping "cheer" — a fast fake walk cycle plus
+				# a vertical hop bob; no new rig or animation needed.
+				Human.animate(c.node, c.walk_phase, true, 0.35, 0.95)
+				c.node.position.y = absf(sin(c.walk_phase)) * 0.22
+				if c.timer <= 0.0:
+					c.state = "leave"
+					c.yaw = randf() * TAU
+					c.timer = 2.5 + randf() * 1.5
+			"leave":
+				c.timer -= dt
+				var nx2: float = c.pos.x + sin(c.yaw) * 3.0 * dt
+				var nz2: float = c.pos.z + cos(c.yaw) * 3.0 * dt
+				if not world.collides_at(nx2, c.pos.z, 0.4):
+					c.pos.x = nx2
+				if not world.collides_at(c.pos.x, nz2, 0.4):
+					c.pos.z = nz2
+				c.node.position.y = 0.0
+				c.walk_phase += dt * 6.0
+				Human.animate(c.node, c.walk_phase, true, 0.5, 0.3)
+		c.node.position.x = c.pos.x
+		c.node.position.z = c.pos.z
+		c.node.rotation.y = c.yaw
+		if c.state == "leave" and c.timer <= 0.0:
+			c.node.queue_free()
+			continue
+		keep.append(c)
+	celebrants = keep
+
+
+## Cosmetic-only teardown — safe to call any number of times, including on an
+## already-empty pool (death, teleport, new game).
+func _clear_celebration() -> void:
+	for c in celebrants:
+		if is_instance_valid(c.node):
+			c.node.queue_free()
+	celebrants.clear()
+
+
+# =====================================================================
 # Particles & pickups
 # =====================================================================
 func _spawn_particle(x: float, y: float, z: float, color: int, life: float,
@@ -3295,57 +3547,40 @@ func _make_vehicle(x: float, z: float, color: int, style := "sedan") -> Dictiona
 # ======================================================================
 # Space programme — rocket, Moon trip, re-entry
 # ======================================================================
-## A low-poly rocket. The booster is its own node so it can detach in flight.
-## `pos` is the upper stage's base; the booster hangs ROCKET_BOOSTER_H below.
+## The Space Shuttle stack — a real "Space Shuttle with boosters" glTF (see
+## SHUTTLE_SCENE above) standing nose-up on the pad. Unlike the old single
+## rocket body, this is three independently detachable stages that start out
+## perfectly aligned (their raw mesh data already shares one coordinate
+## frame — see SHUTTLE_MODEL_SCALE's comment) and separate for real in flight:
+##   - `booster` (the twin SRBs) drops away first, around 520 m up — see
+##     _separate_booster(), fired from _space_tick()'s "ascent" leg.
+##   - `tank_node` (the external tank) drops away next, on reaching space —
+##     see _separate_tank(), fired the instant "space_climb" begins.
+##   - `node` (the orbiter) is what's left flying from then on: the Moon
+##     trip, re-entry and splashdown all fly the orbiter alone, exactly like
+##     the old rocket's upper stage did.
 func _make_rocket(x: float, z: float) -> Dictionary:
-	var white := Build.mat(Build.hex(0xeef0f2), 0.4, 0.2)
-	var dark := Build.mat(Build.hex(0x2a2d33), 0.5, 0.3)
-	var accent := Build.mat(Build.hex(0xc23a3a), 0.4)
-	var metal := Build.mat(Build.hex(0x9a9ca0), 0.3, 0.7)
+	var import_root: Node3D = SHUTTLE_SCENE.instantiate()
+	var orbiter_mesh: MeshInstance3D = import_root.find_child("Object_2", true, false)
+	var tank_mesh: MeshInstance3D = import_root.find_child("Object_3", true, false)
+	var booster_mesh: MeshInstance3D = import_root.find_child("Object_4", true, false)
+	for mesh_node in [orbiter_mesh, tank_mesh, booster_mesh]:
+		mesh_node.get_parent().remove_child(mesh_node)
+		mesh_node.owner = null   # was owned by the packed scene's root; avoid
+			# the "will make owner inconsistent" warning on reparent (see
+			# _wrap_rotor_pivot()'s identical fix for the helicopter's blades)
+	import_root.queue_free()   # the now-empty Sketchfab import shell
 
-	# Booster (lower stage) — carries its own small tail flame, shown briefly
-	# after separation while it tumbles away with a dying engine.
-	var booster := Node3D.new()
-	var b_body := Build.cyl(2.4, 2.6, ROCKET_BOOSTER_H, 16, white)
-	b_body.position = Vector3(0, ROCKET_BOOSTER_H / 2.0, 0)
-	booster.add_child(b_body)
-	var b_stripe := Build.cyl(2.64, 2.64, 2.0, 16, accent)
-	b_stripe.position = Vector3(0, 3.2, 0)
-	booster.add_child(b_stripe)
-	for fi in 4:
-		var fa := fi * PI / 2.0
-		var fin := Build.box(0.4, 4.6, 3.0, dark)
-		fin.position = Vector3(cos(fa) * 2.7, 2.4, sin(fa) * 2.7)
-		fin.rotation.y = fa
-		booster.add_child(fin)
-	var bell := Build.cyl(1.5, 2.3, 2.6, 14, metal)
-	bell.position = Vector3(0, -0.9, 0)
-	booster.add_child(bell)
-	var b_flame_mat := Build.emissive(Build.hex(0xff8a20), Build.hex(0xff6a10), 3.0)
-	b_flame_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	var b_flame := Build.cyl(1.1, 0.1, 3.0, 8, b_flame_mat)
-	b_flame.position = Vector3(0, -2.4, 0)
-	b_flame.visible = false
-	booster.add_child(b_flame)
-	booster.set_meta("flame", b_flame)
-	add_child(booster)
-
-	# Upper stage — the vehicle node. Origin at its base. The visual body is
-	# the real "Cartoon Rocket" glTF model (Samuel Metters, CC-BY-4.0 — see
-	# README credits) rather than procedural cylinders — see ROCKET_MODEL_*
-	# above for how the fit was measured.
+	# Upper stage — the vehicle node. Origin at the base of the WHOLE stack
+	# (the booster nozzles resting on the pad), so no separate booster-height
+	# offset is needed the way the old procedural rocket required.
 	var g := Node3D.new()
-	var model := ROCKET_SCENE.instantiate()
-	model.scale = Vector3(ROCKET_MODEL_SCALE, ROCKET_MODEL_SCALE, ROCKET_MODEL_SCALE)
-	model.position = Vector3(
-		-ROCKET_MODEL_CENTER_X * ROCKET_MODEL_SCALE,
-		-ROCKET_MODEL_MIN_Y * ROCKET_MODEL_SCALE,
-		-ROCKET_MODEL_CENTER_Z * ROCKET_MODEL_SCALE)
-	g.add_child(model)
+	g.add_child(_wrap_shuttle_mesh(orbiter_mesh))
 
 	# Layered exhaust plume — bright core, orange mid, translucent outer, all
 	# fanning down from a shared nozzle glow. _update_rocket_fx() scales and
-	# flickers these with thrust each frame (see _update_rocket()).
+	# flickers these with thrust each frame (see _update_rocket()). Unchanged
+	# from the old rocket — g's origin is still "the base the engines sit at".
 	var core_mat := Build.emissive(Build.hex(0xfff2c8), Build.hex(0xfff2c8), 4.5)
 	core_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	var mid_mat := Build.emissive(Build.hex(0xff8a20), Build.hex(0xff7a10), 3.2)
@@ -3387,26 +3622,317 @@ func _make_rocket(x: float, z: float) -> Dictionary:
 	g.add_child(heat_glow)
 	add_child(g)
 
-	var base_y := ROCKET_BASE_Y + ROCKET_BOOSTER_H
-	g.position = Vector3(x, base_y, z)
-	booster.position = Vector3(x, ROCKET_BASE_Y, z)
+	# External tank — its own top-level node so it can tumble away
+	# independently once it separates (see _separate_tank()).
+	var tank_node := Node3D.new()
+	tank_node.add_child(_wrap_shuttle_mesh(tank_mesh))
+	add_child(tank_node)
+
+	# Twin SRB boosters — same idea, plus a small dying tail flame shown
+	# briefly after separation (see _separate_booster()).
+	var booster_node := Node3D.new()
+	booster_node.add_child(_wrap_shuttle_mesh(booster_mesh))
+	var b_flame_mat := Build.emissive(Build.hex(0xff8a20), Build.hex(0xff6a10), 3.0)
+	b_flame_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var b_flame := Build.cyl(1.1, 0.1, 3.0, 8, b_flame_mat)
+	b_flame.position = Vector3(0, -1.6, 0)
+	b_flame.visible = false
+	booster_node.add_child(b_flame)
+	booster_node.set_meta("flame", b_flame)
+	add_child(booster_node)
+
+	g.position = Vector3(x, ROCKET_BASE_Y, z)
+	tank_node.position = g.position
+	booster_node.position = g.position
 
 	return {
-		"node": g, "booster": booster,
+		"node": g, "booster": booster_node, "tank_node": tank_node,
 		"flame": {
 			"core": flame_core, "mid": flame_mid, "outer": flame_outer, "glow": nozzle_glow,
 			"heat": heat_glow, "core_mat": core_mat, "glow_mat": glow_mat, "heat_mat": heat_mat,
 		},
-		"pos": Vector3(x, base_y, z), "yaw": 0.0, "speed": 0.0, "throttle": 0.0,
+		"pos": Vector3(x, ROCKET_BASE_Y, z), "yaw": 0.0, "speed": 0.0, "throttle": 0.0,
 		"tilt": 0.0, "max_speed": 135.0, "max_alt": 9000.0,
 		"hp": 9999.0, "max_hp": 9999.0, "burning": false, "burn_timer": 0.0,
-		"is_plane": true, "is_rocket": true, "on_ground": true, "separated": false,
-		"radius": 3.2, "cam_dist": 28.0,
+		"is_plane": true, "is_rocket": true, "on_ground": true,
+		"separated": false, "tank_separated": false,
+		"radius": 10.0, "cam_dist": 50.0,
 	}
+
+
+## Wraps one already-detached Object_2/3/4 mesh (see _make_rocket()) in a
+## fresh Node3D sized and lifted to stand the shuttle upright. No rotation is
+## applied here at all — see SHUTTLE_MODEL_SCALE's comment for why a plain
+## scale reproduces the model's original nose-up orientation exactly.
+func _wrap_shuttle_mesh(mesh_node: MeshInstance3D) -> Node3D:
+	var wrap := Node3D.new()
+	wrap.add_child(mesh_node)
+	wrap.scale = Vector3(SHUTTLE_MODEL_SCALE, SHUTTLE_MODEL_SCALE, SHUTTLE_MODEL_SCALE)
+	wrap.position = Vector3(0, SHUTTLE_BASE_OFFSET, 0)
+	return wrap
 
 
 func _spawn_rocket() -> void:
 	vehicles.append(_make_rocket(CityWorld.LAUNCH.x, CityWorld.LAUNCH.z))
+
+
+# ======================================================================
+# Spacecraft — hover off the pad, sudden hyperspeed to space, and back
+# ======================================================================
+## A low-poly fighter (see SPACECRAFT_SCENE above), parked at the space
+## facility. Fully player-flown: a slow hover off the pad, a sudden vertical
+## hyperspeed burn to space, free flight once there, and a controllable (not
+## scripted) hover-descent onto the Moon or back to Earth — see
+## _update_spacecraft() for the phase machine.
+func _make_spacecraft(x: float, z: float, yaw: float) -> Dictionary:
+	var g := Node3D.new()
+	var model: Node3D = SPACECRAFT_SCENE.instantiate()
+	# The file holds three copies of the same ship side by side — keep only
+	# the centred one ("Cube_007") and discard the other two.
+	for dup_name in ["Cube_034", "Cube_005"]:
+		var dup := model.find_child(dup_name, true, false)
+		if dup != null:
+			dup.free()
+	model.scale = Vector3(SPACECRAFT_MODEL_SCALE, SPACECRAFT_MODEL_SCALE, SPACECRAFT_MODEL_SCALE)
+	model.position = Vector3(0,
+		-SPACECRAFT_MODEL_MIN_Y * SPACECRAFT_MODEL_SCALE,
+		-SPACECRAFT_MODEL_CENTER_Z * SPACECRAFT_MODEL_SCALE)
+	g.add_child(model)
+
+	# A small tail engine glow, echoing the shuttle's plume but sized for a
+	# fighter — brightens with thrust in _update_spacecraft().
+	var glow_mat := Build.emissive(Build.hex(0x9fe0ff), Build.hex(0x6fd0ff), 0.0)
+	glow_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var glow := Build.sphere(0.6, glow_mat)
+	glow.position = Vector3(0, 0.4, -3.4)
+	glow.visible = false
+	g.add_child(glow)
+
+	g.position = Vector3(x, 0, z)
+	g.rotation.y = yaw
+	add_child(g)
+	return {
+		"node": g, "glow": glow, "glow_mat": glow_mat,
+		"pos": Vector3(x, 0, z), "yaw": yaw, "pitch": 0.0, "roll": 0.0,
+		"vy": 0.0, "speed": 0.0,
+		"phase": "landed", "leg": "earth", "phase_t": 0.0,
+		"max_speed": CRAFT_SPACE_MAX_SPEED, "max_alt": 9000.0,
+		"hp": 9999.0, "max_hp": 9999.0, "burning": false, "burn_timer": 0.0,
+		"is_plane": true, "is_spacecraft": true, "on_ground": true,
+		"radius": 7.0, "cam_dist": 20.0,
+	}
+
+
+func _spawn_spacecraft() -> void:
+	vehicles.append(_make_spacecraft(CityWorld.SPACECRAFT_PAD.x, CityWorld.SPACECRAFT_PAD.z, 0.0))
+
+
+## The Y the spacecraft's landing gear rests on for whichever body ("leg")
+## it currently belongs to — flat ground back at the facility, or the real
+## lunar heightfield wherever it happens to be over the Moon.
+func _spacecraft_ground_y(v: Dictionary) -> float:
+	if v.leg == "moon":
+		return world.moon_height(v.pos.x, v.pos.z)
+	return 0.0
+
+
+## Small thruster dust puff under the spacecraft on lift-off/landing — sandy
+## pad dust on Earth, grey lunar dust on the Moon.
+func _spacecraft_dust(v: Dictionary) -> void:
+	var p: Vector3 = v.pos
+	var col: int = 0x9c9ca0 if v.leg == "moon" else 0xc9bd9e
+	for i in 8:
+		_spawn_particle(p.x + (randf() - 0.5) * 3.0, p.y + 0.2, p.z + (randf() - 0.5) * 3.0,
+			col, 0.6 + randf() * 0.4,
+			(randf() - 0.5) * 5.0, 1.5 + randf() * 2.0, (randf() - 0.5) * 5.0)
+
+
+## Brightens/hides the tail engine glow and drives its engine-loop volume —
+## split out of _update_spacecraft() so every phase can just call it.
+func _update_spacecraft_fx(v: Dictionary, thrust: float) -> void:
+	var flying: bool = v.phase != "landed"
+	v.glow.visible = flying
+	if flying:
+		var flick: float = 0.85 + randf() * 0.3
+		v.glow_mat.emission_energy_multiplier = (1.5 + thrust * 5.0) * flick
+	AudioFX.spacecraft_engine_set(thrust, 1.0)
+
+
+## The state machine driving the whole spacecraft round trip: hover off the
+## pad, sudden hyperspeed to space, free flight, a controllable hover-descent
+## onto the Moon (or back to Earth), and the same again in reverse. `leg`
+## tracks which body ("earth"/"moon") the current hover/hyperspeed numbers
+## and eventual landing belong to; `phase` tracks where in that leg's
+## sequence the craft currently is. Both live on the vehicle dict, so a
+## vehicle swap or a death/respawn can't leave the state machine stuck.
+## Deliberately does NOT reuse _update_rocket()'s scripted autoland — every
+## leg here is player-controlled, per the brief.
+func _update_spacecraft(v: Dictionary, dt: float) -> void:
+	v.phase_t += dt
+	var turn := -_move_x()
+	var climb := _updown()
+	var thrust := _drive_accel()
+	var thrust_fx := 0.0
+
+	match v.phase:
+		"landed":
+			# Parked (Earth or Moon) — holding thrust (or fly-up) kicks off
+			# the hover launch; otherwise it just sits there, engine cold.
+			v.speed = 0.0
+			v.vy = 0.0
+			if thrust > 0.1 or climb > 0.1:
+				v.phase = "hover"
+				v.phase_t = 0.0
+				AudioFX.spacecraft_engine_start()
+				_show_objective("Lifting off...", 3.0)
+		"hover":
+			# A slow, floaty, scripted rise with a gentle bob — no lateral
+			# control yet, just ~2 s to clear the pad.
+			var ground_ref: float = _spacecraft_ground_y(v)
+			var t: float = clampf(v.phase_t / CRAFT_HOVER_TIME, 0.0, 1.0)
+			var bob: float = sin(_now * 3.0) * 0.15 * t
+			v.pos.y = ground_ref + CRAFT_HOVER_HEIGHT * t + bob
+			thrust_fx = 0.4
+			if randf() < 0.4:
+				_spacecraft_dust(v)
+			if t >= 1.0:
+				v.phase = "hyper"
+				v.phase_t = 0.0
+				_show_objective("HYPERSPEED", 2.0)
+				AudioFX.wind_start()
+		"hyper":
+			# Pitch up hard and shoot straight up — the sudden lightspeed
+			# leap to orbit. Heavy shake + FOV kick + wind roar sell the
+			# speed (see _update_camera()'s spacecraft FOV-kick branch).
+			v.vy = move_toward(v.vy, CRAFT_HYPER_VY, CRAFT_HYPER_VY / 1.2 * dt)
+			v.pos.y += v.vy * dt
+			v.pitch = move_toward(v.pitch, 1.4, 3.0 * dt)
+			thrust_fx = 1.0
+			_add_cam_shake(0.65)
+			AudioFX.wind_set(1.0)
+			if randf() < 0.6:
+				_spawn_particle(v.pos.x + (randf() - 0.5) * 2.0, v.pos.y - 4.0 - randf() * 6.0,
+					v.pos.z + (randf() - 0.5) * 2.0, [0x9fe0ff, 0xffffff].pick_random(),
+					0.5 + randf() * 0.4, (randf() - 0.5) * 2.0, -10.0 - randf() * 6.0, (randf() - 0.5) * 2.0)
+			var space_alt: float = CRAFT_EARTH_SPACE_ALT if v.leg == "earth" else CRAFT_MOON_SPACE_ALT
+			var ground_ref2: float = _spacecraft_ground_y(v)
+			if (v.phase_t >= CRAFT_HYPER_MIN_TIME and v.pos.y - ground_ref2 >= space_alt) \
+					or v.phase_t >= CRAFT_HYPER_MAX_TIME:
+				v.phase = "space"
+				v.phase_t = 0.0
+				v.pitch = 0.0
+				v.vy = 0.0
+				v.speed = CRAFT_SPACE_MAX_SPEED * 0.3
+				AudioFX.wind_stop()
+				if v.leg == "earth":
+					space_state = "space"
+					_set_space_sky(true)
+					_show_objective("REACHED SPACE — fully controllable. Press E / Interact to jump to the MOON.", 7.0)
+				else:
+					_show_objective("BACK IN SPACE ABOVE THE MOON — Press E / Interact to jump to EARTH.", 7.0)
+		"space":
+			# Free flight — pitch via fly up/down, yaw via steer, thrust via
+			# forward/back. Snappy handling, no drag, nothing to collide with.
+			v.yaw += turn * 1.1 * dt
+			v.pitch = clampf(v.pitch + climb * 0.9 * dt, -1.2, 1.2)
+			v.roll = lerp(v.roll, -turn * 0.4, dt * 3.0)
+			v.speed = move_toward(v.speed, CRAFT_SPACE_MAX_SPEED * (0.4 + 0.6 * maxf(0.0, thrust)),
+				CRAFT_SPACE_MAX_SPEED * 0.8 * dt)
+			var fwd := Vector3(sin(v.yaw) * cos(v.pitch), sin(v.pitch), cos(v.yaw) * cos(v.pitch))
+			v.pos += fwd * v.speed * dt
+			thrust_fx = 0.5 + 0.3 * clampf(v.speed / CRAFT_SPACE_MAX_SPEED, 0.0, 1.0)
+		"moon_descent", "earth_descent":
+			# Controllable hover-descent — fly-down sinks it, the sticks drift
+			# it sideways, clamped so it can never tunnel through the ground.
+			v.vy = move_toward(v.vy, -climb * CRAFT_DESCENT_SPEED - 2.0, 20.0 * dt)
+			v.yaw += turn * 0.9 * dt
+			v.speed = move_toward(v.speed, thrust * 24.0, 30.0 * dt)
+			var fwd2 := Vector3(sin(v.yaw), 0, cos(v.yaw))
+			v.pos += fwd2 * v.speed * dt
+			v.pos.y += v.vy * dt
+			thrust_fx = 0.45
+			var floor_y: float = _spacecraft_ground_y(v)
+			if v.pos.y <= floor_y:
+				v.pos.y = floor_y
+				v.vy = 0.0
+				v.speed = 0.0
+				v.phase = "landed"
+				v.phase_t = 0.0
+				_spacecraft_dust(v)
+				if v.leg == "moon":
+					space_state = "moon_landed"
+					_show_objective("TOUCHDOWN ON THE MOON — fully controllable landing.", 8.0)
+				else:
+					space_state = ""
+					_set_space_sky(false)
+					AudioFX.spacecraft_engine_stop()
+					_show_objective("Touched down back on Earth.", 5.0)
+
+	_update_spacecraft_fx(v, thrust_fx)
+	v.node.position = v.pos
+	v.node.rotation = Vector3(-v.pitch, v.yaw, v.roll)
+	if in_car == v:
+		player_pos = v.pos
+	v.on_ground = v.phase == "landed"
+
+
+## E / Interact while flying the spacecraft: in free "space" flight it jumps
+## to the other body (Earth <-> Moon); once landed it steps the player out;
+## mid-flight otherwise (hover/hyperspeed/descent) it's a no-op, like the
+## rocket's own "can't leave mid-flight" guard.
+func _spacecraft_interact(v: Dictionary) -> void:
+	match v.phase:
+		"space":
+			_spacecraft_jump(v)
+		"landed":
+			_exit_spacecraft(v)
+		_:
+			_show_objective("Can't leave the cockpit mid-flight.", 3.0)
+
+
+## The hyperspace jump between Earth orbit and Moon orbit — an instant
+## reposition (the one beat the rocket's own trip abstracts the same way,
+## teleporting into its descent leg) with a heavy shake so it still reads as
+## a sudden burst of speed rather than a cut. Hands control straight back —
+## the actual landing is always the player's to fly.
+func _spacecraft_jump(v: Dictionary) -> void:
+	_add_cam_shake(0.8)
+	if v.leg == "earth":
+		v.leg = "moon"
+		v.pos = Vector3(CityWorld.MOON_PAD.x + 30.0, CityWorld.MOON_Y + 240.0, CityWorld.MOON_PAD.z - 20.0)
+		v.phase = "moon_descent"
+		v.phase_t = 0.0
+		_show_objective("JUMP TO THE MOON — hover down and land wherever you like.", 6.0)
+	else:
+		v.leg = "earth"
+		v.pos = Vector3(CityWorld.SPACECRAFT_PAD.x + 40.0, 900.0, CityWorld.SPACECRAFT_PAD.z - 30.0)
+		v.phase = "earth_descent"
+		v.phase_t = 0.0
+		_show_objective("JUMP TO EARTH — hover down to land.", 6.0)
+	v.vy = 0.0
+	v.speed = 0.0
+
+
+## Step out of the spacecraft — only reachable while phase=="landed" (see
+## _spacecraft_interact()). Exiting on the Moon sets space_state="moon", the
+## exact state the rocket path sets, so moon-walking, the suit and the buggy
+## all keep working identically regardless of which vehicle flew you up.
+func _exit_spacecraft(v: Dictionary) -> void:
+	in_car = null
+	cam_dist = 6.5
+	var exit_x: float = v.pos.x + cos(v.yaw + PI / 2.0) * 4.0
+	var exit_z: float = v.pos.z + sin(v.yaw + PI / 2.0) * 4.0
+	if v.leg == "moon":
+		space_state = "moon"
+		player_pos = Vector3(exit_x, world.moon_height(exit_x, exit_z), exit_z)
+		_show_objective("On the Moon. Low gravity — walk around. Board the spacecraft again to fly home.", 9.0)
+	else:
+		space_state = ""
+		player_pos = Vector3(exit_x, 0, exit_z)
+		_show_objective("Stepped out of the spacecraft.", 3.0)
+	player_node.visible = true
+	AudioFX.spacecraft_engine_stop()
+	AudioFX.wind_stop()
 
 
 ## An open-frame moon buggy, parked on the lunar surface near the lander.
@@ -3486,10 +4012,11 @@ func _update_moon_buggy(v: Dictionary, dt: float) -> void:
 	player_pos = v.pos
 
 
-## The Y the rocket's base rests on, by trip leg. The booster only adds height
-## while it is still attached (the launch); once dropped, the upper stage sits
-## on its own base. On the Moon this reads the actual terrain under (x, z),
-## not a flat plane, so touchdown lands wherever the ground really is.
+## The Y the shuttle's base rests on, by trip leg. `g`'s origin is always the
+## base of the stack (or, once separated, the orbiter's own base) — no
+## separate booster-height offset is needed. On the Moon this reads the
+## actual terrain under (x, z), not a flat plane, so touchdown lands wherever
+## the ground really is.
 func _rocket_floor(x: float, z: float) -> float:
 	match space_state:
 		"moon_descent", "moon_landed", "moon", "moon_ascent":
@@ -3499,7 +4026,7 @@ func _rocket_floor(x: float, z: float) -> float:
 		"reentry":
 			return -100000.0
 		_:
-			return ROCKET_BASE_Y + ROCKET_BOOSTER_H
+			return ROCKET_BASE_Y
 
 
 ## True while the dark space sky is showing (day/night tinting is suspended).
@@ -3568,8 +4095,11 @@ func _update_rocket(v: Dictionary, dt: float) -> void:
 	var wob: float = v.throttle * 0.02
 	v.node.rotation = Vector3(v.tilt + sin(_now * 17.0) * wob, v.yaw, sin(_now * 11.0) * wob)
 	if not v.separated:
-		v.booster.position = v.pos - Vector3(0, ROCKET_BOOSTER_H, 0)
+		v.booster.position = v.pos
 		v.booster.rotation = v.node.rotation
+	if not v.tank_separated:
+		v.tank_node.position = v.pos
+		v.tank_node.rotation = v.node.rotation
 	player_pos = v.pos
 
 	# Dust (or spray) kicks up the instant the base leaves or touches the ground.
@@ -3676,7 +4206,7 @@ func _rocket_ground_fx(v: Dictionary) -> void:
 			AudioFX.splash()
 		_:
 			for i in 12:
-				_spawn_particle(p.x + (randf() - 0.5) * 3.0, p.y - ROCKET_BOOSTER_H + 0.2,
+				_spawn_particle(p.x + (randf() - 0.5) * 3.0, p.y + 0.2,
 					p.z + (randf() - 0.5) * 3.0, 0xc9bd9e, 0.7 + randf() * 0.5,
 					(randf() - 0.5) * 7.0, 2.0 + randf() * 2.5, (randf() - 0.5) * 7.0)
 
@@ -3692,6 +4222,8 @@ func _space_tick(v: Dictionary, dt: float) -> void:
 				_set_space_sky(true)
 				_show_objective("ENTERING SPACE — keep climbing for the Moon.", 5.0)
 		"space_climb", "space":
+			if not v.tank_separated:
+				_separate_tank(v)
 			space_state = "space"
 			if v.pos.y > 3000.0:
 				space_state = "moon_descent"
@@ -3722,21 +4254,40 @@ func _space_tick(v: Dictionary, dt: float) -> void:
 
 func _separate_booster(v: Dictionary) -> void:
 	v.separated = true
-	var bp: Vector3 = v.booster.position
+	_detach_shuttle_stage(v.booster, true)
+	_show_objective("BOOSTER SEPARATION", 4.0)
+
+
+## The external tank drops away once the shuttle reaches space — real ETs
+## carry no engines, so it tumbles silently with no tail flame.
+func _separate_tank(v: Dictionary) -> void:
+	v.tank_separated = true
+	_detach_shuttle_stage(v.tank_node, false)
+	_show_objective("EXTERNAL TANK SEPARATION", 4.0)
+
+
+## Shared separation FX for a detaching shuttle stage — a small debris/spark
+## burst plus a lateral kick, slow tumble and (boosters only) a dying tail
+## flame; generalises the old single-booster effect this replaces. Both
+## stages are already their own top-level nodes (see _make_rocket()), so
+## nothing needs reparenting here — _update_rocket() simply stops syncing
+## the detached one's transform to the orbiter's, and _update_falling_
+## boosters() takes over its motion from here.
+func _detach_shuttle_stage(stage_node: Node3D, has_flame: bool) -> void:
+	var bp: Vector3 = stage_node.position
 	for i in 10:
 		_spawn_particle(bp.x + (randf() - 0.5) * 2.0, bp.y, bp.z + (randf() - 0.5) * 2.0,
 			[0xffb347, 0x9a9a9a].pick_random(), 0.6 + randf() * 0.4,
 			(randf() - 0.5) * 6.0, (randf() - 0.5) * 3.0, (randf() - 0.5) * 6.0)
-	if v.booster.has_meta("flame"):
-		var bf: MeshInstance3D = v.booster.get_meta("flame")
+	if has_flame and stage_node.has_meta("flame"):
+		var bf: MeshInstance3D = stage_node.get_meta("flame")
 		bf.visible = true
 		bf.scale = Vector3.ONE
 	_falling_boosters.append({
-		"node": v.booster, "vy": -3.0,
+		"node": stage_node, "vy": -3.0,
 		"spin": Vector3(randf() - 0.5, 0.0, randf() - 0.5) * 1.2,
-		"flame_t": 0.6,
+		"flame_t": 0.6 if has_flame else 0.0,
 	})
-	_show_objective("BOOSTER SEPARATION", 4.0)
 
 
 func _update_falling_boosters(dt: float) -> void:
@@ -3767,7 +4318,7 @@ func _exit_rocket(v: Dictionary) -> void:
 	match space_state:
 		"ascent":
 			# Still parked on the pad — let the player change their mind.
-			if v.pos.y < ROCKET_BASE_Y + ROCKET_BOOSTER_H + 4.0:
+			if v.pos.y < ROCKET_BASE_Y + 4.0:
 				space_state = ""
 				in_car = null
 				cam_dist = 6.5
@@ -3801,6 +4352,8 @@ func _exit_rocket(v: Dictionary) -> void:
 			v.node.queue_free()
 			if is_instance_valid(v.booster):
 				v.booster.queue_free()
+			if is_instance_valid(v.tank_node):
+				v.tank_node.queue_free()
 			vehicles.erase(v)
 			space_state = ""
 			_set_space_sky(false)
@@ -4657,6 +5210,9 @@ func _update_camera(dt: float) -> void:
 	var fov_target := CAM_FOV_HIP
 	if in_car != null and not in_car.is_plane:
 		fov_target += 14.0 * clampf(absf(in_car.get("speed", 0.0)) / maxf(in_car.get("max_speed", 1.0), 1.0), 0.0, 1.3)
+	elif in_car != null and in_car.get("is_spacecraft", false) and in_car.get("phase", "") == "hyper":
+		# The sudden-hyperspeed FOV kick — a wide, disorientating punch-in.
+		fov_target += 38.0
 	camera.fov = lerp(camera.fov, fov_target, 1.0 - pow(0.65, k))
 	var is_plane: bool = in_car != null and in_car.is_plane
 	var target: Vector3 = in_car.pos if in_car != null else player_pos

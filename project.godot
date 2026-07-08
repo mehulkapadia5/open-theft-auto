@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 GameState="*res://scripts/autoload/game_state.gd"
+Forbes="*res://scripts/autoload/forbes.gd"
 Ventures="*res://scripts/autoload/ventures.gd"
 InputConfig="*res://scripts/autoload/input_config.gd"
 AudioFX="*res://scripts/autoload/audio_fx.gd"

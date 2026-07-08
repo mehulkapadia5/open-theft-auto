@@ -16,6 +16,10 @@ var respect: float = 5.0
 var happiness: float = 50.0
 var total_donated: int = 0
 
+# Wealth-milestone storyline — every threshold in game.gd's WEALTH_MILESTONES
+# that has ever been crossed, so each one fires its celebration exactly once.
+var milestones_hit: Array = []
+
 func init_weapon_ammo() -> void:
 	weapon_ammo.clear()
 	for w in WeaponDB.LIST:
@@ -29,6 +33,7 @@ func reset_run() -> void:
 	respect = 5.0
 	happiness = 50.0
 	total_donated = 0
+	milestones_hit = []
 	init_weapon_ammo()
 
 func get_ammo(w: Dictionary) -> float:

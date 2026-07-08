@@ -11,6 +11,7 @@ var _ambient_player: AudioStreamPlayer
 var _radio_player: AudioStreamPlayer
 var _rocket_player: AudioStreamPlayer   # continuous ascent engine loop
 var _wind_player: AudioStreamPlayer     # continuous re-entry wind roar loop
+var _spacecraft_player: AudioStreamPlayer   # continuous spacecraft engine loop
 
 # Pre-baked streams
 var _s_hit: AudioStreamWAV
@@ -35,6 +36,7 @@ var _s_missile: AudioStreamWAV      # Iron Man shoulder missile launch
 var _s_rocket_ignite: AudioStreamWAV
 var _s_rocket_loop: AudioStreamWAV
 var _s_wind_loop: AudioStreamWAV
+var _s_spacecraft_loop: AudioStreamWAV
 
 func _ready() -> void:
 	for i in 20:
@@ -51,6 +53,7 @@ func _ready() -> void:
 	_s_rocket_ignite = _rocket_ignition(1.1, 0.95)
 	_s_rocket_loop = _rocket_rumble(1.4, 0.85)
 	_s_wind_loop = _wind_noise(1.0, 0.8)
+	_s_spacecraft_loop = _spacecraft_hum(1.3, 0.8)
 	_s_repulsor = _repulsor(0.22, 0.7)
 	_s_missile = _missile_launch(0.5, 0.9)
 
@@ -86,6 +89,9 @@ func _ready() -> void:
 	_wind_player = AudioStreamPlayer.new()
 	add_child(_wind_player)
 	_wind_player.stream = _s_wind_loop
+	_spacecraft_player = AudioStreamPlayer.new()
+	add_child(_spacecraft_player)
+	_spacecraft_player.stream = _s_spacecraft_loop
 
 
 ## A WAV that loops forward forever — for ambience and the radio.
@@ -216,6 +222,30 @@ func _wind_noise(dur: float, vol: float) -> AudioStreamWAV:
 		var white := randf() * 2.0 - 1.0
 		prev = prev * 0.55 + white * 0.45
 		data.encode_s16(i * 2, int(clamp(prev * vol, -1.0, 1.0) * 32767.0))
+	return _loop_wav(data)
+
+
+## A smooth sci-fi engine whine for the spacecraft — two slightly detuned
+## sine layers (a slow shimmering beat) plus a soft filtered-noise breath,
+## brighter and more electric than the rocket's brown-noise rumble so the two
+## engines never get mistaken for one another.
+func _spacecraft_hum(dur: float, vol: float) -> AudioStreamWAV:
+	var n := int(MIX_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var lp := 0.0
+	var phase_a := 0.0
+	var phase_b := 0.0
+	var f_a := 140.0
+	var f_b := 141.6   # detuned a couple Hz sharp — a slow shimmering beat
+	for i in n:
+		phase_a += f_a / MIX_RATE
+		phase_b += f_b / MIX_RATE
+		var tone := (sin(phase_a * TAU) + sin(phase_b * TAU)) * 0.5
+		var white := randf() * 2.0 - 1.0
+		lp += (white - lp) * 0.08
+		var s := tone * 0.75 + lp * 0.5
+		data.encode_s16(i * 2, int(clamp(s * vol, -1.0, 1.0) * 32767.0))
 	return _loop_wav(data)
 
 
@@ -491,6 +521,28 @@ func wind_stop() -> void:
 	if _wind_player.playing:
 		_wind_player.stop()
 
+## Start the spacecraft's continuous engine loop (idempotent — safe to call
+## every frame while it should be running, same convention as
+## rocket_engine_start()).
+func spacecraft_engine_start() -> void:
+	if not _muted and not _spacecraft_player.playing:
+		_spacecraft_player.volume_db = -60.0
+		_spacecraft_player.pitch_scale = 0.9
+		_spacecraft_player.play()
+
+## Track thrust (0..1) and a fade (1 audible, fading to 0) onto the loop.
+func spacecraft_engine_set(thrust: float, fade: float) -> void:
+	if not _spacecraft_player.playing:
+		return
+	var base_db: float = lerp(-30.0, -6.0, clampf(thrust, 0.0, 1.0))
+	_spacecraft_player.volume_db = base_db - (1.0 - clampf(fade, 0.0, 1.0)) * 50.0
+	_spacecraft_player.pitch_scale = 0.9 + thrust * 0.8
+
+## Stop the spacecraft's engine loop — idempotent.
+func spacecraft_engine_stop() -> void:
+	if _spacecraft_player.playing:
+		_spacecraft_player.stop()
+
 ## Splashdown — a splash plus a low thump as the capsule settles.
 func splash() -> void:
 	_play(_noise(0.5, 0.75), -3.0)
@@ -518,6 +570,8 @@ func set_muted(v: bool) -> void:
 		_rocket_player.stream_paused = v
 	if _wind_player != null:
 		_wind_player.stream_paused = v
+	if _spacecraft_player != null:
+		_spacecraft_player.stream_paused = v
 
 func is_muted() -> bool:
 	return _muted

@@ -132,8 +132,14 @@ const BRIDGE_H := 4.2                # deck height of the elevated river bridges
 const ESTATE_GROUNDS := {"x0": -135.0, "x1": 18.0, "z0": 252.0, "z1": 470.0}
 const ESTATE_CAUSEWAY := {"x0": 14.0, "x1": 34.0, "z0": 330.0, "z1": 350.0}
 const PRESIDENT_HOUSE := {"x": -46.0, "z": 300.0}   # the mansion (motorcade origin)
-# Free Harbor Space launch complex — in the north wilderness, clear of the F1 circuit.
-const LAUNCH := {"x": 210.0, "z": -250.0}
+# The Ridgeline Deep Space Facility — a hidden launch/spacecraft base buried
+# deep in the northern mountains, well past the F1 circuit and the Hollywood
+# hill; nothing points to it (no waypoint, no minimap marker — see hud.gd's
+# _marker() calls, which never reference it) so the player has to go looking.
+# Reachable overland (open wilderness, no roads) or by air.
+const LAUNCH := {"x": 300.0, "z": -650.0}
+# Where the spacecraft parks, just outside the hangar's mouth.
+const SPACECRAFT_PAD := {"x": 245.0, "z": -614.0}
 # The Moon — a grey surface built high above the world; the rocket flies up to it.
 const MOON_Y := 4000.0
 const MOON_PAD := {"x": 0.0, "z": 0.0}
@@ -178,6 +184,10 @@ var beacon_mat: StandardMaterial3D
 var sign_mat: StandardMaterial3D
 var beacon_node: MeshInstance3D
 var clouds: Array = []               # {node, drift}
+# FORBES — RICHEST billboard banners mounted on downtown towers (see
+# _mount_forbes_banner / _build_exchange / _build_ventures). Text-only
+# refresh on Forbes.updated — no geometry rebuild.
+var forbes_banners: Array[Label3D] = []
 
 var _window_xforms: Array[Transform3D] = []
 var _road_mat: StandardMaterial3D
@@ -206,7 +216,7 @@ func generate() -> void:
 	_build_beach()
 	_build_presidential_residence()
 	_build_docks()
-	_build_launch_base()
+	_build_space_facility()
 	_build_moon()
 	_build_trading_floor()
 	track = Track.new()
@@ -222,6 +232,9 @@ func generate() -> void:
 	_add_outer_landscape()
 	_add_clouds(45)
 	_build_window_multimesh()
+	# Live FORBES banners — text-only refresh whenever the rankings tick.
+	Forbes.updated.connect(_refresh_forbes_banners)
+	_refresh_forbes_banners()
 
 func _add_ground() -> void:
 	# Endless sea out to the horizon in every direction — the landmass is an
@@ -265,15 +278,74 @@ func _add_ground() -> void:
 		add_child(strip)
 
 
-## Free Harbor Space launch complex — a pad, gantry tower, fuel tanks and a sign. The
-## rocket itself is a flyable vehicle spawned by Game.
-func _build_launch_base() -> void:
+## The Ridgeline Deep Space Facility — a hidden launch + spacecraft base deep
+## in the northern mountains: a perimeter fence with one gate, a rocket pad
+## with its service gantry and fuel tanks, a hangar the spacecraft parks in
+## front of, a control tower with a radar dish, and corner floodlights. No
+## waypoint or minimap marker points here by design (see LAUNCH's comment) —
+## the rocket and spacecraft themselves are flyable vehicles spawned by Game.
+func _build_space_facility() -> void:
 	var cx: float = LAUNCH.x
 	var cz: float = LAUNCH.z
 	var concrete := Build.mat(Build.hex(0x8e9298), 0.9)
 	var dark := Build.mat(Build.hex(0x33363d), 0.7)
 	var metal := Build.mat(Build.hex(0xb4b8be), 0.3, 0.7)
+	var fence_m := Build.mat(Build.hex(0x4a4e54), 0.6, 0.5)
+	var hangar_m := Build.mat(Build.hex(0x5a5e64), 0.7, 0.3)
+	var hangar_dark := Build.mat(Build.hex(0x14161a), 0.85)
 
+	# --- Perimeter fence, with a single gate gap on the south (+Z) side ---
+	var hw := 90.0
+	var hd := 75.0
+	var wh := 3.4
+	var t := 0.35
+	_wall(cx, cz - hd, hw * 2.0, wh, t, fence_m)
+	_wall(cx - hw, cz, t, wh, hd * 2.0, fence_m)
+	_wall(cx + hw, cz, t, wh, hd * 2.0, fence_m)
+	var flank := hw - 9.0
+	_wall(cx - 9.0 - flank / 2.0, cz + hd, flank, wh, t, fence_m)
+	_wall(cx + 9.0 + flank / 2.0, cz + hd, flank, wh, t, fence_m)
+	for px in [cx - 9.0, cx + 9.0]:
+		var post := Build.box(1.2, wh + 1.0, 1.2, fence_m)
+		post.position = Vector3(px, (wh + 1.0) / 2.0, cz + hd)
+		add_child(post)
+	# Thin decorative posts along the whole run, so the fence reads as a
+	# real chain-link perimeter rather than four flat panels.
+	for fi in range(9):
+		var fx := -hw + fi * (hw * 2.0 / 8.0)
+		for fz in [-hd, hd]:
+			var fp := Build.box(0.5, wh, 0.5, fence_m)
+			fp.position = Vector3(cx + fx, wh / 2.0, cz + fz)
+			add_child(fp)
+	for fi in range(8):
+		var fz2 := -hd + fi * (hd * 2.0 / 7.0)
+		for fx2 in [-hw, hw]:
+			var fp2 := Build.box(0.5, wh, 0.5, fence_m)
+			fp2.position = Vector3(cx + fx2, wh / 2.0, cz + fz2)
+			add_child(fp2)
+	var gate_sign := Label3D.new()
+	gate_sign.text = "RESTRICTED AREA"
+	gate_sign.font_size = 64
+	gate_sign.pixel_size = 0.012
+	gate_sign.modulate = Color("ffd24a")
+	gate_sign.outline_modulate = Color(0, 0, 0, 0.9)
+	gate_sign.position = Vector3(cx, wh + 1.2, cz + hd)
+	gate_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(gate_sign)
+
+	# --- Dirt approach track bridging the gap between the playable wilderness
+	# edge and the gate, so the route reads visually (the walkable corridor
+	# itself is whitelisted in collides_at() / _in_facility_zone, above). ---
+	var gate_z := cz + hd
+	var edge_z := -OUTER_HALF
+	var corridor_mid := (gate_z + edge_z) / 2.0
+	var corridor_len := absf(gate_z - edge_z) + 24.0
+	var track_strip := Build.plane(30.0, corridor_len, Build.mat(Build.hex(0x6b5a3e), 1.0))
+	track_strip.position = Vector3(cx, 0.02, corridor_mid)
+	track_strip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(track_strip)
+
+	# --- Rocket pad, service gantry and fuel tanks, dead centre ---
 	var apron := Build.box(72.0, 0.3, 72.0, concrete)
 	apron.position = Vector3(cx, 0.15, cz)
 	add_child(apron)
@@ -281,7 +353,6 @@ func _build_launch_base() -> void:
 	pad.position = Vector3(cx, 0.5, cz)
 	add_child(pad)
 
-	# Service / gantry tower beside the pad.
 	var tx := cx + 14.0
 	for ly in range(7):
 		var ring := Build.box(5.4, 0.5, 5.4, metal)
@@ -294,7 +365,6 @@ func _build_launch_base() -> void:
 			add_child(leg)
 	buildings.append({"x": tx, "z": cz, "w": 6.0, "d": 6.0, "h": 48.0})
 
-	# Fuel tanks.
 	for i in 3:
 		var tank := Build.cyl(3.2, 3.2, 14.0, 16, metal)
 		tank.position = Vector3(cx - 24.0, 7.0, cz - 16.0 + i * 16.0)
@@ -311,6 +381,63 @@ func _build_launch_base() -> void:
 	sign.position = Vector3(cx, 6.5, cz + 32.0)
 	sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(sign)
+
+	# --- Hangar — the spacecraft parks just outside its open mouth ---
+	var hcx := cx - 55.0
+	var hcz := cz + 15.0
+	var hgw := 34.0
+	var hgh := 13.0
+	var hgd := 26.0
+	var hangar_apron := Build.box(hgw + 20.0, 0.25, hgd + 22.0, concrete)
+	hangar_apron.position = Vector3(hcx, 0.12, hcz + 12.0)
+	add_child(hangar_apron)
+	var hangar_body := Build.box(hgw, hgh, hgd, hangar_m)
+	hangar_body.position = Vector3(hcx, hgh / 2.0, hcz)
+	add_child(hangar_body)
+	# Barrel/arched roof — a half-cylinder capping the box.
+	var roof := Build.cyl(hgw / 2.0, hgw / 2.0, hgd, 14, hangar_m)
+	roof.rotation.z = PI / 2.0
+	roof.position = Vector3(hcx, hgh, hcz)
+	add_child(roof)
+	# Dark open mouth on the south (+Z) face — the spacecraft's berth.
+	var mouth := Build.box(hgw - 6.0, hgh - 2.0, 0.4, hangar_dark)
+	mouth.position = Vector3(hcx, (hgh - 2.0) / 2.0 + 0.4, hcz + hgd / 2.0 + 0.05)
+	add_child(mouth)
+	buildings.append({"x": hcx, "z": hcz, "w": hgw, "d": hgd, "h": hgh})
+
+	# --- Control tower + radar dish ---
+	var tcx := cx + 45.0
+	var tcz := cz - 35.0
+	var tower_h := 30.0
+	var tower := Build.cyl(3.4, 4.2, tower_h, 12, concrete)
+	tower.position = Vector3(tcx, tower_h / 2.0, tcz)
+	add_child(tower)
+	var cab := Build.box(7.0, 3.4, 7.0, Build.mat(Build.hex(0x2a3a4e), 0.2, 0.3))
+	cab.position = Vector3(tcx, tower_h + 1.7, tcz)
+	add_child(cab)
+	var dish_arm := Build.cyl(0.4, 0.4, 4.0, 8, metal)
+	dish_arm.rotation.x = PI / 2.0
+	dish_arm.position = Vector3(tcx, tower_h + 5.5, tcz)
+	add_child(dish_arm)
+	var dish := Build.cyl(0.4, 4.2, 1.6, 16, metal)
+	dish.rotation.x = -0.5
+	dish.position = Vector3(tcx, tower_h + 7.5, tcz + 1.6)
+	add_child(dish)
+	buildings.append({"x": tcx, "z": tcz, "w": 8.4, "d": 8.4, "h": tower_h + 3.4})
+
+	# --- Floodlights at the four fence corners ---
+	for corner: Vector2 in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
+		var fx3 := cx + corner.x * (hw - 6.0)
+		var fz3 := cz + corner.y * (hd - 6.0)
+		var pole := Build.cyl(0.22, 0.3, 9.0, 8, dark)
+		pole.position = Vector3(fx3, 4.5, fz3)
+		add_child(pole)
+		var head_m := Build.emissive(Build.hex(0xdfe8ff), Build.hex(0xdfe8ff), 0.0)
+		var head := Build.box(1.6, 0.7, 1.0, head_m)
+		head.rotation.x = -0.5
+		head.position = Vector3(fx3, 8.8, fz3 - corner.y * 0.8)
+		add_child(head)
+		lamp_mats.append(head_m)
 
 
 ## The Moon — a real rolling, cratered heightfield built high above the world.
@@ -808,6 +935,12 @@ func _build_exchange(cx: float, cz: float) -> void:
 	sign_text.position = Vector3(cx, th - 7.0, tz - td / 2.0 - 0.46)
 	add_child(sign_text)
 
+	# Two FORBES — RICHEST banners on the tower's side faces (the front/-Z
+	# face already carries the FREE HARBOR EXCHANGE sign above), so the live
+	# rankings are visible to traffic approaching from either side street.
+	_mount_forbes_banner(Vector3(cx + tw / 2.0 + 0.2, th * 0.55, tz), PI / 2.0)
+	_mount_forbes_banner(Vector3(cx - tw / 2.0 - 0.2, th * 0.4, tz), -PI / 2.0)
+
 	_build_terminal_kiosk(EXCHANGE.x, EXCHANGE.z)
 
 
@@ -841,6 +974,44 @@ func _build_terminal_kiosk(x: float, z: float, prompt_text := "STOCKS  ·  PRESS
 	prompt.position = Vector3(x, 2.7, z)
 	prompt.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(prompt)
+
+
+## Mounts one FORBES — RICHEST billboard on a tower face: a big lit panel
+## flush against the wall (for the "mounted on the building" silhouette) plus
+## a billboarded Label3D on top of it, so the live rankings are always legible
+## regardless of which side the player approaches from. `pos` is the panel's
+## centre; `face_yaw` (radians, about Y) points the panel's thin (0.3 m) axis
+## along the wall's outward normal — PI/2 for a tower's +X face, -PI/2 for
+## -X, 0.0/PI for +Z/-Z. Text is refreshed only (see generate()'s
+## Forbes.updated.connect) — no geometry rebuild after this initial mount.
+func _mount_forbes_banner(pos: Vector3, face_yaw: float, w := 10.0, h := 6.0) -> void:
+	var panel_m := Build.emissive(Build.hex(0x140d05), Build.hex(0xff8a1f), 1.6)
+	var panel := Build.box(w, h, 0.3, panel_m)
+	panel.position = pos
+	panel.rotation.y = face_yaw
+	add_child(panel)
+	var lbl := Label3D.new()
+	lbl.text = "FORBES — RICHEST"
+	lbl.font_size = 40
+	lbl.pixel_size = 0.0072
+	lbl.line_spacing = 8.0
+	lbl.modulate = Color("ffe6b8")
+	lbl.outline_modulate = Color(0, 0, 0, 0.85)
+	lbl.outline_size = 6
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.position = pos
+	add_child(lbl)
+	forbes_banners.append(lbl)
+
+
+## Refreshes every mounted FORBES banner's text from the live rankings —
+## connected to Forbes.updated once at the end of generate(). Text-only.
+func _refresh_forbes_banners() -> void:
+	var txt := Forbes.banner_text()
+	for lbl in forbes_banners:
+		if is_instance_valid(lbl):
+			lbl.text = txt
 
 
 ## Shows or hides the trading-floor office and arms its floor + wall collision.
@@ -1529,6 +1700,9 @@ func _build_ventures(cx: float, cz: float) -> void:
 		var ring := Build.cyl(t_top + 0.15, t_bot + 0.15, 0.7, 6, band)
 		ring.position = Vector3(cx, ty + by, tz)
 		add_child(ring)
+
+	# A FORBES — RICHEST banner on the tower's east face, near the HQ entrance.
+	_mount_forbes_banner(Vector3(cx + t_bot + 0.3, ty + 24.0, tz), PI / 2.0, 8.0, 5.0)
 
 	# Gold crown band, then a violet spire cap — the mafia-sim tower's silhouette.
 	var crown_top := ty + th
@@ -2565,6 +2739,28 @@ func _in_patch_zone(x: float, z: float, margin: float) -> bool:
 	return false
 
 
+## True over the hidden Ridgeline Deep Space Facility (see _build_space_facility)
+## or its approach corridor. The facility sits at LAUNCH (z=-650), well beyond
+## OUTER_HALF (426) — the edge of the normal playable wilderness — so without
+## this whitelist collides_at()'s edge-of-world rule (see below) blocks the
+## entire compound and the ground leading up to it solid, same problem
+## _in_patch_zone solves for the imported city patches. Buildings/fences
+## inside the compound still block via the box grid, checked earlier in
+## collides_at() — this only keeps the open ground walkable.
+func _in_facility_zone(x: float, z: float) -> bool:
+	# The compound footprint (fence half-extents 90 x 75, see
+	# _build_space_facility's hw/hd) plus a 45 m halo.
+	if absf(x - LAUNCH.x) < 90.0 + 45.0 and absf(z - LAUNCH.z) < 75.0 + 45.0:
+		return true
+	# A corridor bridging the gap from the playable edge to the compound —
+	# without it the player hits an invisible band walking the approach.
+	var lo: float = minf(LAUNCH.z, -(OUTER_HALF + 5.0))
+	var hi: float = maxf(LAUNCH.z, -(OUTER_HALF + 5.0))
+	if absf(x - LAUNCH.x) < 45.0 and z > lo and z < hi:
+		return true
+	return false
+
+
 ## A dedicated hill north of the city with a big white HOLLYWOOD-style sign on
 ## its south slope, facing the downtown skyline.
 func _add_hollywood_sign() -> void:
@@ -2627,8 +2823,8 @@ func _add_mountains() -> void:
 		# Keep the F1 circuit corridor clear of mountains.
 		if track != null and track.near(x, z, r + 26.0):
 			continue
-		# Keep the launch complex clear.
-		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < r + 50.0:
+		# Keep the space facility clear (bigger now — fence, hangar, tower).
+		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < r + 90.0:
 			continue
 		# Keep the imported city patches clear.
 		if _in_patch_zone(x, z, r + 18.0):
@@ -2671,7 +2867,7 @@ func _add_suburbs() -> void:
 			continue
 		if track != null and track.near(x, z, 26.0):
 			continue
-		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 70.0:
+		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 110.0:
 			continue
 		# Stay out of the imported city patches — collides_at only sees their
 		# shrunk building boxes, not their streets.
@@ -2742,8 +2938,8 @@ func _add_outer_landscape() -> void:
 		# Keep the F1 circuit corridor clear of hills, rocks and trees.
 		if track != null and track.near(x, z, 30.0):
 			continue
-		# Keep the launch complex clear.
-		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 60.0:
+		# Keep the space facility clear.
+		if Vector2(LAUNCH.x - x, LAUNCH.z - z).length() < 100.0:
 			continue
 		# Stay out of the imported city patches — collides_at only sees their
 		# shrunk building boxes, so hills/rocks would spawn in their streets.
@@ -2871,6 +3067,11 @@ func collides_at(x: float, z: float, r := 0.5, altitude := 0.0) -> bool:
 	# ground is solid and walkable — their buildings already blocked via the box
 	# grid above. The 40 m halo also bridges the gap back to the playable area.
 	if _in_patch_zone(x, z, 40.0):
+		return false
+	# The hidden space facility and its approach sit beyond the wilderness
+	# edge below — whitelist them the same way, or the compound (and the walk
+	# up to its gate) is entirely blocked. See _in_facility_zone.
+	if _in_facility_zone(x, z):
 		return false
 	if absf(x) > OUTER_HALF or z < -OUTER_HALF:
 		return true                       # edge of the playable wilderness

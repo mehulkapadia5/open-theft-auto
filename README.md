@@ -4,8 +4,9 @@ A **Godot 4.7** open-world sandbox — a GTA-style "Vice Beach" homage built in
 pure GDScript. Third-person: walk, drive, fly, shoot, invest and build a
 reputation in a procedural, Los-Angeles-style island city with a wanted/police
 system, a day/night cycle, a full economy, a wearable Iron-Man-style flight
-suit, an F1 circuit, and even a rocket trip to the Moon. Playable end-to-end on
-**keyboard + mouse or a game controller**, with saved progress.
+suit, an F1 circuit, and a Space Shuttle trip to the Moon from a hidden
+mountain facility. Playable end-to-end on **keyboard + mouse or a game
+controller**, with saved progress.
 
 > Open Theft Auto is an unofficial, fan-made homage. It is not affiliated with,
 > endorsed by, or connected to Rockstar Games or Take-Two Interactive, and uses
@@ -16,8 +17,19 @@ mid-rise **commercial** ring, sprawling **residential villas** (each with a
 lawn, pool, garage and pitched roof), a leafy **hills** neighbourhood, green
 **parks** with ponds, and a north-south **river** crossed by bridges. Snow-capped
 mountains ring the horizon, an **airport island** and the **President's estate**
-sit off the coast across causeways, and the **Moon** hangs high above — reachable
-by rocket.
+sit off the coast across causeways, and the **Moon** hangs high above.
+
+Deep in the northern mountains — off the map, no waypoint, no minimap marker —
+sits a hidden facility: a fenced compound with a hangar, a control tower and
+a rocket pad. Find it and two ways up are waiting: a real **Space Shuttle**
+stack (orbiter, external tank and twin solid boosters, all three modelled
+separately) that lifts off, sheds its boosters around 520 m and its tank on
+reaching space, then flies the Moon trip on the orbiter alone exactly like
+the old single-piece rocket did; or a fully player-flown **fighter
+spacecraft** that hovers a few metres off the pad and then punches into a
+sudden hyperspeed climb straight to orbit, free-flies there on the sticks,
+and — instead of a scripted autoland — hover-descends under full manual
+control onto the Moon (or back to Earth) wherever you choose to set down.
 
 ## Run it
 
@@ -103,9 +115,15 @@ A dedicated **melee** strike works with any loadout.
   out mid-air with a parachute (`F`).
 - **Helicopter** — a **UH-60 Black Hawk** on the airport helipad: vertical
   take-off, hover when you let go, `F` to bail with a chute.
-- **Rocket to the Moon** — board the rocket, ride the ascent through re-entry to
-  a real low-gravity **lunar surface** (rolling craters, a moon buggy, Earth in
+- **Space Shuttle to the Moon** — find the hidden mountain facility, board the
+  Shuttle stack and ride the ascent (real booster separation around 520 m,
+  then the external tank drops away on reaching space) through re-entry to a
+  real low-gravity **lunar surface** (rolling craters, a moon buggy, Earth in
   the sky), then fly home.
+- **Spacecraft** — a fully player-flown fighter parked in the facility's
+  hangar: hover off the pad, punch into a sudden hyperspeed climb to orbit,
+  free-fly there on the sticks, then hover-descend under full manual control
+  onto the Moon or back to Earth — no autoland, you fly every landing.
 
 ### Iron Man suit
 
@@ -127,6 +145,17 @@ You're a rags-to-billions mogul. Spend and grow your fortune downtown:
   mostly die but the winners can moon 10×–100×+.
 - **Free Harbor Autos** — buy cars. **Free Harbor Realty** — buy safehouses.
   **Stark Industries** — upgrade the suit.
+- **Wealth milestones** — crossing $1,000 / $100K / $1M / $100M / $1B / $10B /
+  $1T for the first time is an event: a knot of locals rushes over on foot to
+  congratulate you (escalating in size with the tier), a flavourful toast
+  fires, and Respect gets a one-off bump. Each tier only ever fires once, and
+  a milestone crossed mid-flight or mid-drive waits until you're next walking
+  the streets on Earth to play out.
+- **FORBES — RICHEST** — a live rich-list of 8 fictional rival tycoons races
+  your own net worth in real time, shown on big lit banners downtown (the
+  Exchange tower, Angel Ventures HQ). A couple of them play aggressive and
+  occasionally leapfrog you with a "just closed a mega-deal" toast; claim #1
+  for the first time and the whole city hears about it.
 
 ### Reputation — Respect & Happiness
 
@@ -146,8 +175,8 @@ raises Respect; crime and a high wanted level slowly sour the city's Mood.
 ### Quality-of-life
 
 - **Save & Continue** — your money, weapons, cars, suit tier, properties,
-  stocks, venture portfolio and reputation autosave and resume from the boot
-  screen.
+  stocks, venture portfolio, reputation, wealth milestones reached and the
+  FORBES rivals' live worths all autosave and resume from the boot screen.
 - **Phone** (`P`) — fast-travel and quick actions.
 - **Pause menu** (`Esc` / Options) — resume, rebind controls, or exit.
 - Stacked **toast notifications**, a top-down minimap, a day/night cycle
@@ -182,6 +211,7 @@ scripts/
     audio_fx.gd              procedural + sampled SFX (per-gun sounds, engines…)
     stock_market.gd          the stock exchange
     ventures.gd              Angel Ventures — startup deal flow & outcomes
+    forbes.gd                FORBES — RICHEST rival rich-list, live banners
     garage.gd                owned vehicles / suit tier / properties
     race_manager.gd          Grand Prix race state & payouts
 ```
@@ -281,15 +311,20 @@ under their respective licenses:
   `_make_helicopter`; the model and its license live in
   `assets/vehicles/blackhawk/`.
 
-- **"Cartoon Rocket"** by [Samuel Metters](https://sketchfab.com/samuelmetters)
-  ([Sketchfab](https://sketchfab.com/3d-models/cartoon-rocket-c307f05e5dcb4afbae2f59552ba79f55)),
-  licensed under [CC-BY-4.0](http://creativecommons.org/licenses/by/4.0/).
-  This work is based on "Cartoon Rocket"
-  (https://sketchfab.com/3d-models/cartoon-rocket-c307f05e5dcb4afbae2f59552ba79f55)
-  by Samuel Metters (https://sketchfab.com/samuelmetters) licensed under
-  CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/). The Moon rocket's
-  upper-stage visual body, fitted to game space in `scripts/game.gd`'s
-  `_make_rocket`; the model and its license live in `assets/vehicles/rocket/`.
+- **"Space Shuttle with boosters"** by [assetfactory](https://sketchfab.com/assetfactory)
+  ([Sketchfab](https://sketchfab.com/3d-models/space-shuttle-with-boosters-28c98646369f48ee84bc20c267bc685f)),
+  used under the [Sketchfab Standard License](https://sketchfab.com/licenses).
+  Three separately detachable meshes (orbiter, external tank, twin SRB
+  boosters) fitted to game space in `scripts/game.gd`'s `_make_rocket` /
+  `_wrap_shuttle_mesh`; the model and its license live in
+  `assets/vehicles/shuttle/`.
+
+- **"CLASS-3 FIGHTER SPACESHIP HODBIN"** by [Kerem Kavalci](https://sketchfab.com/Keremz)
+  ([Sketchfab](https://sketchfab.com/3d-models/class-3-fighter-spaceship-hodbin-free-model-3451df5fb9d34cd98c3f63cfc0321dd3)),
+  used under the [Sketchfab Standard License](https://sketchfab.com/licenses).
+  The player-flyable spacecraft's visual body, fitted to game space in
+  `scripts/game.gd`'s `_make_spacecraft`; the model and its license live in
+  `assets/vehicles/spacecraft/`.
 
 ## License
 

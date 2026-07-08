@@ -54,6 +54,12 @@ func save_now() -> void:
 			row["payout"] = p.payout
 		venture_portfolio.append(row)
 
+	# Forbes rivals travel by name (their template order/count is fixed, but
+	# matching by name is robust to the cast changing shape later).
+	var forbes_rivals := []
+	for r in Forbes.rivals:
+		forbes_rivals.append({"name": r.name, "worth": r.worth})
+
 	var d := {
 		"money": GameState.money,
 		"weapon_idx": GameState.weapon_idx,
@@ -69,6 +75,9 @@ func save_now() -> void:
 		"total_donated": GameState.total_donated,
 		"venture_portfolio": venture_portfolio,
 		"venture_realised": Ventures.realised,
+		"milestones_hit": GameState.milestones_hit,
+		"forbes_rivals": forbes_rivals,
+		"forbes_reached_1": Forbes.reached_number_one,
 	}
 	var f := FileAccess.open(PATH, FileAccess.WRITE)
 	if f == null:
@@ -106,6 +115,13 @@ func load_into() -> bool:
 	GameState.respect = clampf(float(d.get("respect", GameState.respect)), 0.0, 100.0)
 	GameState.happiness = clampf(float(d.get("happiness", GameState.happiness)), 0.0, 100.0)
 	GameState.total_donated = int(d.get("total_donated", 0))
+
+	var milestones = d.get("milestones_hit", [])
+	if typeof(milestones) == TYPE_ARRAY:
+		var restored_milestones: Array = []
+		for m in milestones:
+			restored_milestones.append(int(m))
+		GameState.milestones_hit = restored_milestones
 
 	var holdings = d.get("holdings", [])
 	if typeof(holdings) == TYPE_ARRAY:
@@ -160,6 +176,22 @@ func load_into() -> bool:
 			restored.append(holding)
 		Ventures.portfolio = restored
 		Ventures.updated.emit()
+
+	# Forbes.reset() already ran in _on_start, leaving a fresh 8-rival cast at
+	# the base spread — only each rival's live worth (matched by name) and the
+	# one-time #1 trophy flag need restoring on top of that.
+	Forbes.reached_number_one = bool(d.get("forbes_reached_1", false))
+	var frivals = d.get("forbes_rivals", [])
+	if typeof(frivals) == TYPE_ARRAY:
+		for row in frivals:
+			if typeof(row) != TYPE_DICTIONARY:
+				continue
+			for r in Forbes.rivals:
+				if r.name == row.get("name", ""):
+					r.worth = clampf(float(row.get("worth", r.worth)),
+							Forbes.MIN_WORTH, Forbes.MAX_WORTH)
+					break
+		Forbes.updated.emit()
 	return true
 
 
