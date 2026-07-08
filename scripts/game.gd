@@ -5249,15 +5249,24 @@ func _update_camera(dt: float) -> void:
 		fov_target += 38.0
 	camera.fov = lerp(camera.fov, fov_target, 1.0 - pow(0.65, k))
 	var is_plane: bool = in_car != null and in_car.is_plane
+	var is_rocket: bool = in_car != null and in_car.get("is_rocket", false)
 	var target: Vector3 = in_car.pos if in_car != null else player_pos
+	# The shuttle stack's origin is its BASE and it climbs fast: frame it from
+	# the side at mid-stack height with a quick catch-up, or the lagging chase
+	# cam ends up directly beneath the engines staring up through the plume
+	# with nothing else in view.
+	var v_off := 2.0
+	var look_h := 1.0 if is_plane else 1.5
+	if is_rocket:
+		v_off = 26.0
+		look_h = 18.0
 	var off := Vector3(
 		sin(cam_yaw) * cam_dist * cos(cam_pitch),
-		cam_dist * sin(cam_pitch) + 2.0,
+		cam_dist * sin(cam_pitch) + v_off,
 		cos(cam_yaw) * cam_dist * cos(cam_pitch))
 	var desired := Vector3(target.x + off.x, max(1.2, target.y + off.y), target.z + off.z)
-	camera.position = camera.position.lerp(desired,
-		1.0 - pow(0.88 if is_plane else 0.85, k)) + shake
-	var look_h := 1.0 if is_plane else 1.5
+	var chase: float = 0.72 if is_rocket else (0.88 if is_plane else 0.85)
+	camera.position = camera.position.lerp(desired, 1.0 - pow(chase, k)) + shake
 	camera.look_at(Vector3(target.x, target.y + look_h, target.z))
 
 
